@@ -65,13 +65,13 @@ if __name__ == '__main__':
         assert disable_nvshmem
     else:
         # Prefer H800 series
-        os.environ['TORCH_CUDA_ARCH_LIST'] = os.getenv('TORCH_CUDA_ARCH_LIST', '9.0')
+        os.environ['TORCH_CUDA_ARCH_LIST'] = os.getenv('TORCH_CUDA_ARCH_LIST', '12.0')
 
         # CUDA 12 flags
         nvcc_flags.extend(['-rdc=true', '--ptxas-options=--register-usage-level=10'])
 
     # Disable LD/ST tricks, as some CUDA version does not support `.L1::no_allocate`
-    if os.environ['TORCH_CUDA_ARCH_LIST'].strip() != '9.0':
+    if os.environ['TORCH_CUDA_ARCH_LIST'].strip() != '12.0':
         assert int(os.getenv('DISABLE_AGGRESSIVE_PTX_INSTRS', 1)) == 1
         os.environ['DISABLE_AGGRESSIVE_PTX_INSTRS'] = '1'
 
