@@ -582,7 +582,7 @@ combine(void* combined_x,
     constexpr int64_t hidden_bf16_int4 = kHidden / kNumElemsPerInt4;
 
     // Use different unroll factors for send and recv phases
-    constexpr int kNumSendUnrolls = kHidden % (32 * 4 * sizeof(int4) / sizeof(nv_bfloat16)) == 0 ? 4 : 2;
+    constexpr int kNumSendUnrolls = (kNumMaxUnrolls >= 4 && kHidden % (32 * 4 * sizeof(int4) / sizeof(nv_bfloat16)) == 0) ? 4 : 2;
     constexpr int kNumRecvUnrolls = 2;
     constexpr int hidden_bf16_int4_pad = align(static_cast<int>(hidden_bf16_int4), 32 * kNumSendUnrolls);
     EP_STATIC_ASSERT(kHidden % (32 * 2 * sizeof(int4) / sizeof(nv_bfloat16)) == 0, "Invalid hidden");
@@ -631,9 +631,9 @@ combine(void* combined_x,
 
         // TMA stuffs
         constexpr int kNumTMABufferBytes = sizeof(int4) * 32 * kNumSendUnrolls;
-        constexpr int kNumStages = 3;
+        constexpr int kNumStages = 2;
         constexpr int kNumPrefetch = 1;
-        EP_STATIC_ASSERT(kNumStages == 3 and kNumPrefetch == 1, "Invalid stages");
+        EP_STATIC_ASSERT(kNumStages > 1 and kNumPrefetch == 1, "Invalid stages");
 
         auto smem_ptr = smem_buffer + warp_id * (kNumStages * (kNumTMABufferBytes + 16) + kNumMetaBytes);
         uint32_t tma_phase = 0;
@@ -791,7 +791,7 @@ combine(void* combined_x,
     EP_DEVICE_ASSERT(num_groups > 0);
 
     if (group_idx < num_groups) {
-        constexpr int kNumStages = 3;
+        constexpr int kNumStages = 2;
         constexpr int kNumTMABufferBytes = 16 * 2 + kHidden * 2;
         constexpr int kNumBF16PerWarpBytes = 32 * kNumRecvUnrolls * kNumElemsPerInt4 * 2;
         constexpr int kNumLogFMTPerWarpBytes = kNumBF16PerWarpBytes / 16 * 10;
@@ -945,8 +945,8 @@ void combine(void* combined_x,
     // Online cast cannot use zero-copy
     EP_HOST_ASSERT(not (zero_copy and use_logfmt));
 
-    constexpr int kNumStages = 3;
-    constexpr int kNumMaxUnrolls = 4;
+    constexpr int kNumStages = 2;
+    constexpr int kNumMaxUnrolls = 2;
     constexpr int kMaxNumGroups = 2;
 
     // Send buffer size
