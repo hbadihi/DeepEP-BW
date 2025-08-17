@@ -14,7 +14,8 @@ from utils import init_dist, bench, bench_kineto, calc_diff, hash_tensor, per_to
 
 def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
               rank: int, num_ranks: int, group: dist.ProcessGroup, buffer: deep_ep.Buffer,
-              use_logfmt: bool = False, seed: int = 0):
+              use_logfmt: bool = False, seed: int = 0,
+              imbalance_test: bool = False):
     torch.manual_seed(seed + rank)
     random.seed(seed + rank)
 
@@ -37,6 +38,56 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
 
     scores = torch.randn((num_tokens, num_experts), dtype=torch.float32, device='cuda').abs() + 1
     topk_idx = torch.topk(scores, num_topk, dim=-1, largest=True, sorted=True)[1]
+
+    if imbalance_test:
+        # --- Start of custom workload imbalance logic ---
+        # The goal is to make rank 0 receive 16/9 of its balanced workload.
+        if rank == 0:
+            print('--- Workload Imbalance Test Activated ---')
+
+        # 1. Calculate X, the balanced number of token assignments per rank.
+        # A "token assignment" is a single token being sent to a single expert.
+        assignments_per_rank_X = (num_tokens * num_topk) / num_ranks
+
+        # 2. Identify all token assignments NOT originally routed to rank 0.
+        # Experts on rank 0 have IDs from 0 to num_local_experts - 1.
+        is_not_rank0_expert = topk_idx >= num_local_experts
+        
+        # Get the 2D indices (token_idx, k_idx) of these assignments.
+        reroutable_indices = torch.nonzero(is_not_rank0_expert, as_tuple=False)
+
+        # 3. Calculate how many of these assignments we need to reroute to rank 0.
+        # We need to move (7/9)X assignments to achieve the target.
+        num_to_reroute = int(round((7/9) * assignments_per_rank_X))
+        
+        # Ensure we don't try to reroute more assignments than are available.
+        num_to_reroute = min(num_to_reroute, reroutable_indices.shape[0])
+
+        # Randomly select a subset of the reroutable assignments.
+        rand_perm = torch.randperm(reroutable_indices.shape[0], device='cuda')
+        selected_indices_to_reroute = reroutable_indices[rand_perm[:num_to_reroute]]
+
+        # 4. For the selected assignments, replace their expert ID with a new,
+        # random expert ID from rank 0.
+        if num_to_reroute > 0:
+            new_experts = torch.randint(0, num_local_experts, (num_to_reroute,), device='cuda')
+            # We need to use advanced indexing with tuples for this to work correctly
+            token_indices = selected_indices_to_reroute[:, 0]
+            k_indices = selected_indices_to_reroute[:, 1]
+            topk_idx[token_indices, k_indices] = new_experts
+        
+        if rank == 0:
+            # --- Verification Prints ---
+            assignments_to_rank0 = (topk_idx < num_local_experts).sum().item()
+            expected_rank0_assignments = (16/9) * assignments_per_rank_X
+            print(f'Balanced assignments per rank (X): {assignments_per_rank_X:.0f}')
+            print(f'Rerouting {num_to_reroute} assignments to rank 0...')
+            print(f'Expected assignments for rank 0: {expected_rank0_assignments:.0f} (16/9 * X)')
+            print(f'Actual assignments for rank 0:   {assignments_to_rank0}')
+            print(f'Actual workload ratio for rank 0 vs balanced: {assignments_to_rank0 / assignments_per_rank_X:.2f}x')
+            print('-----------------------------------------', flush=True)
+        # --- End of custom workload imbalance logic ---
+
     topk_weights = torch.randn((num_tokens, num_topk), dtype=torch.float32, device='cuda').abs()
 
     # Randomly mask some positions
@@ -177,17 +228,20 @@ def test_loop(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
                             allow_nvlink_for_low_latency_mode=not args.disable_nvlink, explicitly_destroy=True,
                             allow_mnnvl=args.allow_mnnvl)
     test_main(num_tokens, hidden, num_experts, num_topk, rank, num_ranks, group, buffer,
-              use_logfmt=args.use_logfmt, seed=1)
+              use_logfmt=args.use_logfmt, seed=1,
+              imbalance_test=args.imbalance_test)
 
     do_pressure_test = args.pressure_test
     for seed in range(int(1e9) if do_pressure_test else 0):
         if local_rank == 0:
             print(f'Testing with seed {seed} ...', flush=True)
         ref_hash = test_main(num_tokens, hidden, num_experts, num_topk, rank, num_ranks, group, buffer,
-                             use_logfmt=args.use_logfmt, seed=seed)
+                             use_logfmt=args.use_logfmt, seed=seed,
+                             imbalance_test=args.imbalance_test)
         for i in range(20):
             assert test_main(num_tokens, hidden, num_experts, num_topk, rank, num_ranks, group, buffer,
-                             use_logfmt=args.use_logfmt, seed=seed) == ref_hash, f'Error: seed={seed}'
+                             use_logfmt=args.use_logfmt, seed=seed,
+                             imbalance_test=args.imbalance_test) == ref_hash, f'Error: seed={seed}'
 
     # Destroy the buffer runtime and communication group
     buffer.destroy()
@@ -217,6 +271,8 @@ if __name__ == '__main__':
                         help='Whether to test LogFMT combine')
     parser.add_argument("--pressure-test", action='store_true',
                         help='Whether to do pressure test')
+    parser.add_argument("--imbalance-test", action='store_true',
+                        help='Whether to activate the 16/9 workload imbalance test for rank 0')
     args = parser.parse_args()
 
     num_processes = args.num_processes
