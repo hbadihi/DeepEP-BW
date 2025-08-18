@@ -273,7 +273,10 @@ if __name__ == '__main__':
                         help='Whether to do pressure test')
     parser.add_argument("--imbalance-test", action='store_true',
                         help='Whether to activate the 16/9 workload imbalance test for rank 0')
+    parser.add_argument('--port', type=int, default=8361,
+                        help='Master port for distributed communication (default: 8361)')
     args = parser.parse_args()
 
+    os.environ['MASTER_PORT'] = str(args.port)
     num_processes = args.num_processes
     torch.multiprocessing.spawn(test_loop, args=(num_processes, args), nprocs=num_processes)
