@@ -1,6 +1,5 @@
 import subprocess
 import re
-import csv
 import os
 import numpy as np
 from datetime import datetime
@@ -33,72 +32,58 @@ def main(args):
     print("Starting benchmark...")
     
     # Dictionary to store all bandwidth results for final summary.
-    # Format: { "command_string": [bw1, bw2, ...] }
     all_results = {cmd: [] for cmd in args.commands}
+    num_ranks_per_command = {cmd: 0 for cmd in args.commands}
     
-    # Handle file existence: if output file exists, create a new one with a suffix.
-    output_filename = args.output_file
-    if os.path.exists(output_filename):
-        base, ext = os.path.splitext(output_filename)
-        counter = 1
-        new_filename = f"{base}_{counter}{ext}"
-        while os.path.exists(new_filename):
-            counter += 1
-            new_filename = f"{base}_{counter}{ext}"
-        print(f"File '{output_filename}' already exists. Saving new results to '{new_filename}'.")
-        output_filename = new_filename
+    for command in args.commands:
+        print(f"\n{'='*80}")
+        print(f"Running Experiment: {command}")
+        print(f"{'='*80}")
 
-    # Always create a new file, so use 'w' mode and always write the header.
-    with open(output_filename, 'w', newline='') as csvfile:
-        csv_writer = csv.writer(csvfile)
-        
-        csv_writer.writerow(["timestamp", "command", "run", "rank", "bandwidth_gb_s"])
+        for run_num in range(1, args.num_runs + 1):
+            print(f"  > Starting run {run_num}/{args.num_runs}...")
+            
+            try:
+                # Execute the command. Using shell=True to handle env vars easily.
+                result = subprocess.run(
+                    command,
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    check=True  # This will raise an exception for non-zero exit codes
+                )
 
-        for command in args.commands:
-            print(f"\n{'='*80}")
-            print(f"Running Experiment: {command}")
-            print(f"{'='*80}")
+                # Parse the output to get bandwidth data
+                bandwidth_data = parse_bandwidth(result.stdout)
 
-            for run_num in range(1, args.num_runs + 1):
-                print(f"  > Starting run {run_num}/{args.num_runs}...")
+                if not bandwidth_data:
+                    print("    ! Warning: Could not parse bandwidth information from output.")
+                    continue
+
+                # Store number of ranks for this command if we haven't already
+                if num_ranks_per_command[command] == 0:
+                    num_ranks_per_command[command] = len(bandwidth_data)
+
+                # Get current timestamp
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                # Calculate run average and store individual rank data for the final summary
+                run_avg = np.mean([bw for _, bw in bandwidth_data])
+                for _, bandwidth in bandwidth_data:
+                    all_results[command].append(bandwidth)
                 
-                try:
-                    # Execute the command. Using shell=True to handle env vars easily.
-                    result = subprocess.run(
-                        command,
-                        shell=True,
-                        capture_output=True,
-                        text=True,
-                        check=True  # This will raise an exception for non-zero exit codes
-                    )
-
-                    # Parse the output to get bandwidth data
-                    bandwidth_data = parse_bandwidth(result.stdout)
-
-                    if not bandwidth_data:
-                        print("    ! Warning: Could not parse bandwidth information from output.")
-                        continue
-
-                    # Get current timestamp
-                    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-                    # Write each rank's data to the CSV and store for averaging
-                    for rank, bandwidth in bandwidth_data:
-                        csv_writer.writerow([timestamp, command, run_num, rank, bandwidth])
-                        all_results[command].append(bandwidth)
-                    
-                    # Calculate and print the average for this specific run
-                    run_avg = np.mean([bw for _, bw in bandwidth_data])
-                    print(f"    - Run {run_num} complete. Average bandwidth for this run: {run_avg:.2f} GB/s")
+                # Format individual rank data for appealing stdout, sorted by rank
+                rank_bw_str = ", ".join([f"Rank {r}: {bw:.2f}" for r, bw in sorted(bandwidth_data)])
+                print(f"    - Run {run_num} complete. Average: {run_avg:.2f} GB/s | Ranks: [{rank_bw_str}]")
 
 
-                except subprocess.CalledProcessError as e:
-                    print(f"    ! Error running command on run {run_num}!")
-                    print(f"    ! Return Code: {e.returncode}")
-                    print(f"    ! Stdout:\n{e.stdout}")
-                    print(f"    ! Stderr:\n{e.stderr}")
-                except Exception as e:
-                    print(f"    ! An unexpected error occurred on run {run_num}: {e}")
+            except subprocess.CalledProcessError as e:
+                print(f"    ! Error running command on run {run_num}!")
+                print(f"    ! Return Code: {e.returncode}")
+                print(f"    ! Stdout:\n{e.stdout}")
+                print(f"    ! Stderr:\n{e.stderr}")
+            except Exception as e:
+                print(f"    ! An unexpected error occurred on run {run_num}: {e}")
 
     # --- Final Summary ---
     print(f"\n\n{'='*80}")
@@ -107,24 +92,27 @@ def main(args):
     
     for command, bandwidths in all_results.items():
         if bandwidths:
+            num_ranks = num_ranks_per_command[command]
+            num_runs = len(bandwidths) // num_ranks if num_ranks > 0 else 0
             overall_avg = np.mean(bandwidths)
-            print(f"\nExperiment: {command}")
-            print(f"  - Total Average Bandwidth across all runs: {overall_avg:.2f} GB/s")
+            std_dev = np.std(bandwidths)
             min_bw = np.min(bandwidths)
             max_bw = np.max(bandwidths)
+            print(f"\nExperiment: {command}")
+            print(f"  - Runs: {num_runs}, Ranks per run: {num_ranks}")
+            print(f"  - Average Bandwidth: {overall_avg:.2f} GB/s")
+            print(f"  - Standard Deviation: {std_dev:.2f} GB/s")
             print(f"  - Min Bandwidth (single rank): {min_bw:.2f} GB/s")
             print(f"  - Max Bandwidth (single rank): {max_bw:.2f} GB/s")
         else:
             print(f"\nExperiment: {command}")
             print("  - No data collected for this experiment.")
 
-    print(f"\nDetailed results saved to '{output_filename}'")
-
 
 if __name__ == "__main__":
     # --- Argument Parsing ---
     parser = argparse.ArgumentParser(
-        description="Run benchmark experiments for test_low_latency.py and save results to a CSV file.",
+        description="Run benchmark experiments for test_low_latency.py and print results to the console.",
         formatter_class=argparse.RawTextHelpFormatter
     )
     
@@ -145,13 +133,6 @@ if __name__ == "__main__":
         type=int,
         default=10,
         help='Number of times to run each command (default: 10).'
-    )
-    
-    parser.add_argument(
-        '-o', '--output-file',
-        type=str,
-        default="benchmark_results.csv",
-        help='Name of the output CSV file (default: benchmark_results.csv).'
     )
     
     parsed_args = parser.parse_args()
