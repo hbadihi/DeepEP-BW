@@ -6,33 +6,65 @@ from datetime import datetime
 import argparse
 
 
-def parse_bandwidth(output: str):
+def parse_output(output: str):
     """
-    Parses the benchmark output to find the bandwidth of each rank.
+    Parses the benchmark output to find various performance metrics for each rank.
 
     Args:
         output: The stdout string from the test script.
 
     Returns:
-        A list of tuples, where each tuple is (rank, bandwidth).
+        A dictionary containing lists of (rank, value) tuples for each metric.
     """
-    # Regex to find lines like:
-    # [rank 3] Dispatch + combine bandwidth: 23.18 GB/s...
-    pattern = re.compile(r"\[rank (\d+)\] Dispatch \+ combine bandwidth: ([\d.]+) GB/s")
-    matches = pattern.findall(output)
-    
-    # Convert found strings to correct types (int for rank, float for bandwidth)
-    return [(int(rank), float(bandwidth)) for rank, bandwidth in matches]
+    results = {
+        'total_bw': [],
+        'dispatch_bw': [],
+        'combine_bw': [],
+        'dispatch_latency': [],
+        'combine_latency': [],
+    }
+
+    # Pattern for combined bandwidth from bench()
+    # e.g., [rank 3] Dispatch + combine bandwidth: 23.18 GB/s...
+    total_bw_pattern = re.compile(r"\[rank (\d+)\] Dispatch \+ combine bandwidth: ([\d.]+) GB/s")
+    for rank, bw in total_bw_pattern.findall(output):
+        results['total_bw'].append((int(rank), float(bw)))
+
+    # Pattern for separate bandwidths from bench_kineto(hook=False)
+    # e.g., [rank 0] Dispatch bandwidth: 88.01 GB/s, ... | Combine bandwidth: 68.61 GB/s, ...
+    separate_bw_pattern = re.compile(r"\[rank (\d+)\] Dispatch bandwidth: ([\d.]+) GB/s.*?Combine bandwidth: ([\d.]+) GB/s")
+    for rank, dbw, cbw in separate_bw_pattern.findall(output):
+        results['dispatch_bw'].append((int(rank), float(dbw)))
+        results['combine_bw'].append((int(rank), float(cbw)))
+
+    # Pattern for separate latencies from bench_kineto(hook=True)
+    # e.g., [rank 0] Dispatch send/recv time: 5.23 + 37.15 us | Combine send/recv time: 1.63 + 32.59 us
+    latency_pattern = re.compile(r"\[rank (\d+)\] Dispatch send/recv time: ([\d.]+) \+ ([\d.]+) us.*?Combine send/recv time: ([\d.]+) \+ ([\d.]+) us")
+    for rank, d_send, d_recv, c_send, c_recv in latency_pattern.findall(output):
+        dispatch_latency = float(d_send) + float(d_recv)
+        combine_latency = float(c_send) + float(c_recv)
+        results['dispatch_latency'].append((int(rank), dispatch_latency))
+        results['combine_latency'].append((int(rank), combine_latency))
+
+    return results
 
 
 def main(args):
     """
     Main function to run the benchmark experiments.
     """
-    print("Starting benchmark...")
+    print("Starting benchmark suite...")
+
+    metric_titles = {
+        'total_bw': "Aggregated Bandwidth (GB/s)",
+        'dispatch_bw': "Dispatch Bandwidth (GB/s)",
+        'combine_bw': "Combine Bandwidth (GB/s)",
+        'dispatch_latency': "Dispatch Latency (us)",
+        'combine_latency': "Combine Latency (us)",
+    }
     
-    # Dictionary to store all bandwidth results for final summary.
-    all_results = {cmd: [] for cmd in args.commands}
+    # Dictionaries to store all results for the final summary.
+    all_results = {key: {cmd: [] for cmd in args.commands} for key in metric_titles}
     num_ranks_per_command = {cmd: 0 for cmd in args.commands}
     
     for command in args.commands:
@@ -44,37 +76,38 @@ def main(args):
             print(f"  > Starting run {run_num}/{args.num_runs}...")
             
             try:
-                # Execute the command. Using shell=True to handle env vars easily.
+                # Execute the command
                 result = subprocess.run(
                     command,
                     shell=True,
                     capture_output=True,
                     text=True,
-                    check=True  # This will raise an exception for non-zero exit codes
+                    check=True
                 )
 
-                # Parse the output to get bandwidth data
-                bandwidth_data = parse_bandwidth(result.stdout)
+                # Parse the output to get all metric data
+                parsed_data = parse_output(result.stdout)
 
-                if not bandwidth_data:
-                    print("    ! Warning: Could not parse bandwidth information from output.")
+                if not any(parsed_data.values()):
+                    print("    ! Warning: Could not parse any performance information from output.")
                     continue
 
                 # Store number of ranks for this command if we haven't already
-                if num_ranks_per_command[command] == 0:
-                    num_ranks_per_command[command] = len(bandwidth_data)
+                if num_ranks_per_command[command] == 0 and parsed_data['total_bw']:
+                    num_ranks_per_command[command] = len(parsed_data['total_bw'])
 
-                # Get current timestamp
-                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-                # Calculate run average and store individual rank data for the final summary
-                run_avg = np.mean([bw for _, bw in bandwidth_data])
-                for _, bandwidth in bandwidth_data:
-                    all_results[command].append(bandwidth)
+                # Store results for the final summary
+                for metric, values in parsed_data.items():
+                    all_results[metric][command].extend(values)
                 
-                # Format individual rank data for appealing stdout, sorted by rank
-                rank_bw_str = ", ".join([f"Rank {r}: {bw:.2f}" for r, bw in sorted(bandwidth_data)])
-                print(f"    - Run {run_num} complete. Average: {run_avg:.2f} GB/s | Ranks: [{rank_bw_str}]")
+                # Print a detailed summary for the completed run
+                print(f"    - Run {run_num} complete. Per-rank results:")
+                for metric, title in metric_titles.items():
+                    if parsed_data[metric]:
+                        avg_val = np.mean([v for _, v in parsed_data[metric]])
+                        unit = "GB/s" if "Bandwidth" in title else "us"
+                        rank_vals_str = ", ".join([f"R{r}: {v:.2f}" for r, v in sorted(parsed_data[metric])])
+                        print(f"      - {title:<30} | Avg: {avg_val:>6.2f} {unit} | Ranks: [{rank_vals_str}]")
 
 
             except subprocess.CalledProcessError as e:
@@ -90,23 +123,45 @@ def main(args):
     print("Benchmark Complete: Overall Summary")
     print(f"{'='*80}")
     
-    for command, bandwidths in all_results.items():
-        if bandwidths:
-            num_ranks = num_ranks_per_command[command]
-            num_runs = len(bandwidths) // num_ranks if num_ranks > 0 else 0
-            overall_avg = np.mean(bandwidths)
-            std_dev = np.std(bandwidths)
-            min_bw = np.min(bandwidths)
-            max_bw = np.max(bandwidths)
-            print(f"\nExperiment: {command}")
-            print(f"  - Runs: {num_runs}, Ranks per run: {num_ranks}")
-            print(f"  - Average Bandwidth: {overall_avg:.2f} GB/s")
-            print(f"  - Standard Deviation: {std_dev:.2f} GB/s")
-            print(f"  - Min Bandwidth (single rank): {min_bw:.2f} GB/s")
-            print(f"  - Max Bandwidth (single rank): {max_bw:.2f} GB/s")
-        else:
-            print(f"\nExperiment: {command}")
-            print("  - No data collected for this experiment.")
+    for metric, title in metric_titles.items():
+        header_char = ['#', '*', '+', '-', '~'][list(metric_titles.keys()).index(metric)]
+        print(f"\n\n{header_char*80}")
+        print(f"{header_char*3} Summary for: {title}")
+        print(f"{header_char*80}")
+
+        results_for_metric = all_results[metric]
+
+        for command, values in results_for_metric.items():
+            if values:
+                num_ranks = num_ranks_per_command[command]
+                # values is now a list of (rank, value) tuples
+                numeric_values = [v for _, v in values]
+                num_runs = len(numeric_values) // num_ranks if num_ranks > 0 else 0
+                overall_avg = np.mean(numeric_values)
+                std_dev = np.std(numeric_values)
+                min_val = np.min(numeric_values)
+                max_val = np.max(numeric_values)
+                unit = "GB/s" if "Bandwidth" in title else "us"
+
+                print(f"\nExperiment: {command}")
+                print(f"  - Total Runs: {num_runs}, Ranks per run: {num_ranks}")
+                print(f"  - Average: {overall_avg:.2f} {unit}")
+                print(f"  - Std Dev: {std_dev:.2f} {unit}")
+                print(f"  - Min (across all ranks & runs): {min_val:.2f} {unit}")
+                print(f"  - Max (across all ranks & runs): {max_val:.2f} {unit}")
+
+                # Calculate and print per-rank averages
+                if num_ranks > 0:
+                    rank_averages = []
+                    for r in range(num_ranks):
+                        rank_values = [v for rank, v in values if rank == r]
+                        if rank_values:
+                            rank_avg = np.mean(rank_values)
+                            rank_averages.append(f"Rank {r}: {rank_avg:.2f}")
+                    print(f"  - Per-Rank Avg ({unit}): {', '.join(rank_averages)}")
+            else:
+                print(f"\nExperiment: {command}")
+                print("  - No data collected for this experiment.")
 
 
 if __name__ == "__main__":
