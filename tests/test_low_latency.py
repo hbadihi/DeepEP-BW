@@ -15,7 +15,7 @@ from utils import init_dist, bench, bench_kineto, calc_diff, hash_tensor, per_to
 def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
               rank: int, num_ranks: int, group: dist.ProcessGroup, buffer: deep_ep.Buffer,
               use_logfmt: bool = False, seed: int = 0,
-              imbalance_test: bool = False):
+              imbalance_test: bool = False, export_trace: bool = False):
     torch.manual_seed(seed + rank)
     random.seed(seed + rank)
 
@@ -202,9 +202,15 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
     # Separate profiling
     for return_recv_hook in (False, True):
         group.barrier()
+        trace_path = None
+        if export_trace:
+            timestamp = time.strftime('%Y%m%d-%H%M%S')
+            trace_path = f'/tmp/trace_rank{rank}_hook{return_recv_hook}_{timestamp}.json'
+
         dispatch_t, combine_t = bench_kineto(partial(test_func, return_recv_hook=return_recv_hook),
                                              kernel_names=('dispatch', 'combine'), barrier_comm_profiling=True,
-                                             suppress_kineto_output=True, num_kernels_per_period=2 if return_recv_hook else 1)
+                                             suppress_kineto_output=not export_trace, num_kernels_per_period=2 if return_recv_hook else 1,
+                                             trace_path=trace_path)
         if not return_recv_hook:
             print(f'[rank {rank}] Dispatch bandwidth: {num_dispatch_comm_bytes / 1e9 / dispatch_t:.2f} GB/s, avg_t={dispatch_t * 1e6:.2f} us | '
                   f'Combine bandwidth: {num_combine_comm_bytes / 1e9 / combine_t:.2f} GB/s, avg_t={combine_t * 1e6:.2f} us', flush=True)
@@ -227,26 +233,27 @@ def test_loop(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
                             num_qps_per_rank=num_experts // num_ranks,
                             allow_nvlink_for_low_latency_mode=not args.disable_nvlink, explicitly_destroy=True,
                             allow_mnnvl=args.allow_mnnvl)
-    test_main(num_tokens, hidden, num_experts, num_topk, rank, num_ranks, group, buffer,
-              use_logfmt=args.use_logfmt, seed=1,
-              imbalance_test=args.imbalance_test)
+    try:
+        test_main(num_tokens, hidden, num_experts, num_topk, rank, num_ranks, group, buffer,
+                  use_logfmt=args.use_logfmt, seed=1,
+                  imbalance_test=args.imbalance_test, export_trace=args.export_trace)
 
-    do_pressure_test = args.pressure_test
-    for seed in range(int(1e9) if do_pressure_test else 0):
-        if local_rank == 0:
-            print(f'Testing with seed {seed} ...', flush=True)
-        ref_hash = test_main(num_tokens, hidden, num_experts, num_topk, rank, num_ranks, group, buffer,
-                             use_logfmt=args.use_logfmt, seed=seed,
-                             imbalance_test=args.imbalance_test)
-        for i in range(20):
-            assert test_main(num_tokens, hidden, num_experts, num_topk, rank, num_ranks, group, buffer,
-                             use_logfmt=args.use_logfmt, seed=seed,
-                             imbalance_test=args.imbalance_test) == ref_hash, f'Error: seed={seed}'
-
-    # Destroy the buffer runtime and communication group
-    buffer.destroy()
-    dist.barrier()
-    dist.destroy_process_group()
+        do_pressure_test = args.pressure_test
+        for seed in range(int(1e9) if do_pressure_test else 0):
+            if local_rank == 0:
+                print(f'Testing with seed {seed} ...', flush=True)
+            ref_hash = test_main(num_tokens, hidden, num_experts, num_topk, rank, num_ranks, group, buffer,
+                                 use_logfmt=args.use_logfmt, seed=seed,
+                                 imbalance_test=args.imbalance_test, export_trace=args.export_trace)
+            for i in range(20):
+                assert test_main(num_tokens, hidden, num_experts, num_topk, rank, num_ranks, group, buffer,
+                                 use_logfmt=args.use_logfmt, seed=seed,
+                                 imbalance_test=args.imbalance_test, export_trace=args.export_trace) == ref_hash, f'Error: seed={seed}'
+    finally:
+        # Destroy the buffer runtime and communication group
+        buffer.destroy()
+        dist.barrier()
+        dist.destroy_process_group()
 
 
 if __name__ == '__main__':
@@ -275,6 +282,8 @@ if __name__ == '__main__':
                         help='Whether to activate the 16/9 workload imbalance test for rank 0')
     parser.add_argument('--port', type=int, default=8361,
                         help='Master port for distributed communication (default: 8361)')
+    parser.add_argument('--export-trace', action='store_true',
+                        help='Export kineto trace to /tmp')
     args = parser.parse_args()
 
     os.environ['MASTER_PORT'] = str(args.port)
