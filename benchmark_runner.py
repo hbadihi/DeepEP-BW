@@ -67,7 +67,7 @@ def parse_output(output: str):
             'recv_time': float(c_recv),
             'avg_t_recv': float(c_recv)
         }
-    
+
     return results
 
 
@@ -104,6 +104,9 @@ def process_runs(command, num_runs, log_dir):
     successful_runs = 0
     
     for run_num in range(1, num_runs + 1):
+        print(f"    Starting run {run_num}/{num_runs}...", end='', flush=True)
+        start_time = datetime.now()
+        
         try:
             # Execute command
             result = subprocess.run(
@@ -132,14 +135,15 @@ def process_runs(command, num_runs, log_dir):
             if parsed:
                 all_results.append(parsed)
                 successful_runs += 1
-                print(f"    ✓ Run {run_num}/{num_runs} complete")
+                elapsed = (datetime.now() - start_time).total_seconds()
+                print(f" ✓ complete ({elapsed:.1f}s)")
             else:
-                print(f"    ⚠ Run {run_num}/{num_runs} - no data parsed")
+                print(f" ⚠ no data parsed")
                 
         except subprocess.TimeoutExpired:
-            print(f"    ✗ Run {run_num}/{num_runs} - timeout")
+            print(f" ✗ timeout (>300s)")
         except subprocess.CalledProcessError as e:
-            print(f"    ✗ Run {run_num}/{num_runs} - error (code {e.returncode})")
+            print(f" ✗ error (code {e.returncode})")
             # Still save the error log
             log_file = os.path.join(log_dir, f"run_{run_num}_error.log")
             with open(log_file, 'w') as f:
@@ -148,7 +152,7 @@ def process_runs(command, num_runs, log_dir):
                 f.write("STDOUT:\n" + e.stdout)
                 f.write("\nSTDERR:\n" + e.stderr)
         except Exception as e:
-            print(f"    ✗ Run {run_num}/{num_runs} - unexpected error: {e}")
+            print(f" ✗ unexpected error: {e}")
     
     return all_results, successful_runs
 
