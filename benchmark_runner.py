@@ -94,13 +94,16 @@ def calculate_bandwidth_from_time(avg_time_us, event_type):
     return None
 
 
-def process_runs(command, num_runs, log_dir):
+def process_runs(command, num_runs, log_dir, experiment_name=None):
     """Execute command multiple times and collect results."""
     all_results = []
     successful_runs = 0
     
     for run_num in range(1, num_runs + 1):
-        print(f"    Starting run {run_num}/{num_runs}...", end='', flush=True)
+        if experiment_name:
+            print(f"    [{experiment_name}] Starting run {run_num}/{num_runs}...", end='', flush=True)
+        else:
+            print(f"    Starting run {run_num}/{num_runs}...", end='', flush=True)
         start_time = datetime.now()
         
         try:
@@ -168,17 +171,26 @@ def aggregate_results(all_results, event_type, metric='bandwidth'):
                 elif metric == 'bandwidth' and ('send_time' in data or 'recv_time' in data):
                     # Send/recv events don't have bandwidth - skip
                     pass
+                # Handle avg_t for send/recv events
+                elif metric == 'avg_t' and 'avg_t_send' in data:
+                    rank_data[rank].append(data['avg_t_send'])
+                elif metric == 'avg_t' and 'avg_t_recv' in data:
+                    rank_data[rank].append(data['avg_t_recv'])
     
     return rank_data
 
 
-def create_csv_row(command, event_type, all_results, num_ranks=8):
+def create_csv_row(command, event_type, all_results, num_ranks=8, experiment_name=None):
     """Create a CSV row for a specific event type."""
     row = {
         'Event': event_type,
         'GPU Configuration': extract_gpu_config(command),
         'Imbalance test': extract_imbalance_test(command),
     }
+    
+    # Add experiment name if provided
+    if experiment_name:
+        row['Experiment Name'] = experiment_name
     
     # Check if this is a send/recv event (these don't have bandwidth)
     is_send_recv_event = 'send' in event_type or 'recv' in event_type
@@ -247,6 +259,14 @@ def create_csv_row(command, event_type, all_results, num_ranks=8):
         row['avg_t_send [us]'] = 0  # Not applicable
         row['avg_t_recv [us]'] = 0  # Not applicable
     
+    # Add per-rank timing data (avg_t_rank_0 through avg_t_rank_7)
+    time_data_per_rank = aggregate_results(all_results, event_type, 'avg_t')
+    for rank in range(num_ranks):
+        if rank in time_data_per_rank and time_data_per_rank[rank]:
+            row[f'avg_t_rank_{rank} [us]'] = np.mean(time_data_per_rank[rank])
+        else:
+            row[f'avg_t_rank_{rank} [us]'] = 0
+    
     return row
 
 
@@ -260,8 +280,11 @@ def main(args):
     else:
         csv_filename = f"benchmark_results_{timestamp}.csv"
     
-    # Create log directory
-    log_base_dir = f"/tmp/benchmark_logs_{timestamp}"
+    # Create log directory - use custom if provided, otherwise default
+    if args.log_dir:
+        log_base_dir = args.log_dir
+    else:
+        log_base_dir = f"/tmp/benchmark_logs_{timestamp}"
     os.makedirs(log_base_dir, exist_ok=True)
     
     print(f"\n{'='*80}")
@@ -278,11 +301,22 @@ def main(args):
     
     # Process each command
     for cmd_idx, command in enumerate(args.commands, 1):
-        print(f"\n[Experiment {cmd_idx}/{len(args.commands)}]")
+        # Extract experiment name if provided (for multiple commands)
+        if args.experiment_names and cmd_idx <= len(args.experiment_names):
+            exp_name = args.experiment_names[cmd_idx - 1]
+        elif args.experiment_name:
+            exp_name = args.experiment_name
+        else:
+            exp_name = None
+            
+        print(f"\n[Experiment {cmd_idx}/{len(args.commands)}" + (f" - {exp_name}]" if exp_name else "]"))
         print(f"Command: {command[:80]}{'...' if len(command) > 80 else ''}")
         
-        # Create command-specific log directory
-        cmd_log_dir = os.path.join(log_base_dir, f"experiment_{cmd_idx}")
+        # Create command-specific log directory with meaningful name
+        if exp_name:
+            cmd_log_dir = os.path.join(log_base_dir, f"{exp_name}_run_logs")
+        else:
+            cmd_log_dir = os.path.join(log_base_dir, f"experiment_{cmd_idx}")
         os.makedirs(cmd_log_dir, exist_ok=True)
         
         # Save command info
@@ -290,7 +324,7 @@ def main(args):
             f.write(command)
         
         # Run the command multiple times
-        all_results, successful_runs = process_runs(command, args.num_runs, cmd_log_dir)
+        all_results, successful_runs = process_runs(command, args.num_runs, cmd_log_dir, experiment_name=exp_name)
         
         print(f"  Successful runs: {successful_runs}/{args.num_runs}")
         
@@ -302,7 +336,7 @@ def main(args):
             
             # Create rows for each event type
             for event_type in sorted(event_types):
-                row = create_csv_row(command, event_type, all_results)
+                row = create_csv_row(command, event_type, all_results, experiment_name=exp_name)
                 csv_rows.append(row)
                 
                 # Print summary
@@ -319,13 +353,25 @@ def main(args):
         df = pd.DataFrame(csv_rows)
         
         # Ensure all columns are present in the correct order
-        columns_order = [
+        columns_order = []
+        
+        # Add experiment name if present in any row
+        if any('Experiment Name' in row for row in csv_rows):
+            columns_order.append('Experiment Name')
+            
+        columns_order.extend([
             'Event', 'GPU Configuration', 'Imbalance test',
             'avg bandwidth [GB/s]', 'avg_t [us]', 'avg_t_send [us]', 'avg_t_recv [us]',
             'Std deviation [GB/s]'
-        ]
+        ])
+        
+        # Add per-rank bandwidth columns
         for rank in range(8):
             columns_order.append(f'Avg. rank{rank} BW [GB/s]')
+        
+        # Add per-rank timing columns
+        for rank in range(8):
+            columns_order.append(f'avg_t_rank_{rank} [us]')
         
         # Reorder columns
         df = df.reindex(columns=columns_order, fill_value=0)
@@ -385,6 +431,24 @@ if __name__ == "__main__":
         '-o', '--output',
         type=str,
         help='Output CSV filename (default: benchmark_results_TIMESTAMP.csv)'
+    )
+    
+    parser.add_argument(
+        '--log-dir',
+        type=str,
+        help='Directory for log files (default: /tmp/benchmark_logs_TIMESTAMP)'
+    )
+    
+    parser.add_argument(
+        '--experiment-name',
+        type=str,
+        help='Name for the experiment (used in log directory naming)'
+    )
+    
+    parser.add_argument(
+        '--experiment-names',
+        nargs='+',
+        help='Names for multiple experiments (one per command)'
     )
     
     args = parser.parse_args()

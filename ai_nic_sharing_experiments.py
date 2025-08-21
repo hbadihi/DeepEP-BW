@@ -49,12 +49,17 @@ def run_experiment(name, gpu_config, imbalance_test, output_dir, num_runs=5):
     output_file = f"results_{name}_{timestamp}.csv"
     output_file_abs = os.path.join(os.path.abspath(output_dir), output_file)
     
+    # Create log directory within the output directory for this experiment
+    log_dir = os.path.join(os.path.abspath(output_dir), f"{name}_logs")
+    
     # Build the benchmark runner command
     benchmark_cmd = [
         "python3", "benchmark_runner.py",
         "-c", cmd,
         "-n", str(num_runs),
-        "-o", output_file_abs
+        "-o", output_file_abs,
+        "--log-dir", log_dir,
+        "--experiment-name", name
     ]
     
     print(f"Command: {' '.join(benchmark_cmd)}")
@@ -78,8 +83,8 @@ def run_experiment(name, gpu_config, imbalance_test, output_dir, num_runs=5):
             if result.stdout:
                 for line in result.stdout.split('\n'):
                     if "Log directory:" in line:
-                        log_dir = line.split("Log directory:")[-1].strip()
-                        print(f"  Experiment logs saved to: {log_dir}")
+                        log_dir_reported = line.split("Log directory:")[-1].strip()
+                        print(f"  Experiment logs saved to: {log_dir_reported}")
                     if "Results saved to:" in line:
                         print(f"  Benchmark runner reported: {line.strip()}")
             
@@ -310,9 +315,13 @@ def create_combined_tables(results_files, output_dir):
                        'avg bandwidth [GB/s]', 'avg_t [us]', 'avg_t_send [us]', 
                        'avg_t_recv [us]', 'Std deviation [GB/s]']
     
-    # Add rank columns
+    # Add rank columns for bandwidth
     for i in range(8):
         summary_columns.append(f'Avg. rank{i} BW [GB/s]')
+    
+    # Add rank columns for timing
+    for i in range(8):
+        summary_columns.append(f'avg_t_rank_{i} [us]')
     
     created_files = []
     
