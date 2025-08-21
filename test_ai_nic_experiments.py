@@ -38,8 +38,7 @@ def run_quick_test(verbose=False):
         print("-" * 40)
         
         # Build test command with minimal but sufficient parameters
-        # Using smaller hidden dimension and fewer experts for faster testing
-        base_cmd = "python3 tests/test_low_latency.py --disable-nvlink --num-tokens 128 --hidden 1024 --num-experts 32"
+        base_cmd = "python3 tests/test_low_latency.py --disable-nvlink --num-tokens 128"
         
         if gpu_config.lower() != "all":
             num_gpus = len(gpu_config.split(','))
