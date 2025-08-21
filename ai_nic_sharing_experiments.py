@@ -338,7 +338,11 @@ def create_combined_tables(results_files, output_dir):
             
             # Save to CSV in output directory
             output_file = os.path.join(output_dir, f"combined_{table_name}_{timestamp}.csv")
-            filtered_df.to_csv(output_file, index=False, float_format='%.2f')
+            # Don't use float_format if we have send/recv events with N/A values
+            if isinstance(event_filter, list) and any('send' in e or 'recv' in e for e in event_filter):
+                filtered_df.to_csv(output_file, index=False)
+            else:
+                filtered_df.to_csv(output_file, index=False, float_format='%.2f')
             created_files.append(output_file)
             
             print(f"✓ Created: {os.path.basename(output_file)} ({len(filtered_df)} rows)")
@@ -364,7 +368,8 @@ def create_combined_tables(results_files, output_dir):
     
     # Create a master combined file with all events
     master_file = os.path.join(output_dir, f"combined_all_events_{timestamp}.csv")
-    combined_df.to_csv(master_file, index=False, float_format='%.2f')
+    # Don't use float_format since we may have N/A values from send/recv events
+    combined_df.to_csv(master_file, index=False)
     created_files.append(master_file)
     print(f"✓ Created master file: {os.path.basename(master_file)} ({len(combined_df)} rows)")
     

@@ -86,16 +86,12 @@ def extract_imbalance_test(command: str):
 
 def calculate_bandwidth_from_time(avg_time_us, event_type):
     """
-    Calculate bandwidth from time for send/recv events.
-    This is an approximation - adjust the data size based on your actual test.
+    Note: Send/recv events don't have bandwidth - they are timing breakdowns only.
+    This function returns None to indicate bandwidth is not applicable.
     """
-    # Assuming standard data size from test_low_latency.py
-    # You may need to adjust this based on actual parameters
-    data_size_gb = 0.022  # Example: 22MB default from the test
-    
-    if avg_time_us > 0:
-        return data_size_gb / (avg_time_us / 1e6)  # Convert us to seconds
-    return 0
+    # Send/recv times are components of dispatch/combine operations
+    # They don't have independent bandwidth measurements
+    return None
 
 
 def process_runs(command, num_runs, log_dir):
@@ -170,13 +166,8 @@ def aggregate_results(all_results, event_type, metric='bandwidth'):
                 if metric in data:
                     rank_data[rank].append(data[metric])
                 elif metric == 'bandwidth' and ('send_time' in data or 'recv_time' in data):
-                    # For send/recv events, calculate bandwidth from time
-                    if 'send' in event_type and 'send_time' in data:
-                        bw = calculate_bandwidth_from_time(data['send_time'], event_type)
-                        rank_data[rank].append(bw)
-                    elif 'recv' in event_type and 'recv_time' in data:
-                        bw = calculate_bandwidth_from_time(data['recv_time'], event_type)
-                        rank_data[rank].append(bw)
+                    # Send/recv events don't have bandwidth - skip
+                    pass
     
     return rank_data
 
@@ -189,26 +180,36 @@ def create_csv_row(command, event_type, all_results, num_ranks=8):
         'Imbalance test': extract_imbalance_test(command),
     }
     
-    # Get bandwidth data
-    bw_data = aggregate_results(all_results, event_type, 'bandwidth')
+    # Check if this is a send/recv event (these don't have bandwidth)
+    is_send_recv_event = 'send' in event_type or 'recv' in event_type
     
-    if bw_data:
-        # Calculate overall statistics
-        all_values = [v for rank_values in bw_data.values() for v in rank_values]
-        row['avg bandwidth [GB/s]'] = np.mean(all_values) if all_values else 0
-        row['Std deviation [GB/s]'] = np.std(all_values) if all_values else 0
+    if not is_send_recv_event:
+        # Get bandwidth data for non-send/recv events
+        bw_data = aggregate_results(all_results, event_type, 'bandwidth')
         
-        # Per-rank averages
-        for rank in range(num_ranks):
-            if rank in bw_data and bw_data[rank]:
-                row[f'Avg. rank{rank} BW [GB/s]'] = np.mean(bw_data[rank])
-            else:
+        if bw_data:
+            # Calculate overall statistics
+            all_values = [v for rank_values in bw_data.values() for v in rank_values]
+            row['avg bandwidth [GB/s]'] = np.mean(all_values) if all_values else 0
+            row['Std deviation [GB/s]'] = np.std(all_values) if all_values else 0
+            
+            # Per-rank averages
+            for rank in range(num_ranks):
+                if rank in bw_data and bw_data[rank]:
+                    row[f'Avg. rank{rank} BW [GB/s]'] = np.mean(bw_data[rank])
+                else:
+                    row[f'Avg. rank{rank} BW [GB/s]'] = 0
+        else:
+            row['avg bandwidth [GB/s]'] = 0
+            row['Std deviation [GB/s]'] = 0
+            for rank in range(num_ranks):
                 row[f'Avg. rank{rank} BW [GB/s]'] = 0
     else:
-        row['avg bandwidth [GB/s]'] = 0
-        row['Std deviation [GB/s]'] = 0
+        # Send/recv events don't have bandwidth
+        row['avg bandwidth [GB/s]'] = 'N/A'
+        row['Std deviation [GB/s]'] = 'N/A'
         for rank in range(num_ranks):
-            row[f'Avg. rank{rank} BW [GB/s]'] = 0
+            row[f'Avg. rank{rank} BW [GB/s]'] = 'N/A'
     
     # Get timing data - handle send/recv events specially
     if 'send' in event_type:
@@ -306,9 +307,10 @@ def main(args):
                 
                 # Print summary
                 print(f"  {event_type}:")
-                print(f"    - Avg BW: {row['avg bandwidth [GB/s]']:.2f} GB/s")
+                if row['avg bandwidth [GB/s]'] != 'N/A':
+                    print(f"    - Avg BW: {row['avg bandwidth [GB/s]']:.2f} GB/s")
+                    print(f"    - Std dev: {row['Std deviation [GB/s]']:.2f} GB/s")
                 print(f"    - Avg time: {row['avg_t [us]']:.2f} us")
-                print(f"    - Std dev: {row['Std deviation [GB/s]']:.2f} GB/s")
         else:
             print("  ⚠ No data collected for this experiment")
     
@@ -328,8 +330,8 @@ def main(args):
         # Reorder columns
         df = df.reindex(columns=columns_order, fill_value=0)
         
-        # Save to CSV
-        df.to_csv(csv_filename, index=False, float_format='%.2f')
+        # Save to CSV (don't use float_format since we have 'N/A' values)
+        df.to_csv(csv_filename, index=False)
         
         print(f"\n{'='*80}")
         print(f"Benchmark Complete")
@@ -343,8 +345,13 @@ def main(args):
         print(f"\nSummary by Event Type:")
         for event in df['Event'].unique():
             event_df = df[df['Event'] == event]
-            avg_bw = event_df['avg bandwidth [GB/s]'].mean()
-            print(f"  {event}: {avg_bw:.2f} GB/s average")
+            # Check if bandwidth data is available (not 'N/A')
+            if event_df['avg bandwidth [GB/s]'].iloc[0] != 'N/A':
+                avg_bw = event_df['avg bandwidth [GB/s]'].mean()
+                print(f"  {event}: {avg_bw:.2f} GB/s average")
+            else:
+                avg_time = event_df['avg_t [us]'].mean()
+                print(f"  {event}: {avg_time:.2f} us average (timing only)")
     else:
         print(f"\n{'='*80}")
         print("⚠ No data collected across all experiments")
