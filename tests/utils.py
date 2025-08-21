@@ -165,9 +165,9 @@ def bench_kineto(fn, kernel_names: Union[str, tuple], num_tests: int = 30, suppr
             for i in range(2):
                 # NOTES: use a large kernel and a barrier to eliminate the unbalanced CPU launch overhead
                 if barrier_comm_profiling:
-                    lhs = torch.randn((8192, 8192), dtype=torch.float, device='cuda')
-                    rhs = torch.randn((8192, 8192), dtype=torch.float, device='cuda')
-                    lhs @ rhs
+                    # lhs = torch.randn((8192, 8192), dtype=torch.float, device='cuda')
+                    # rhs = torch.randn((8192, 8192), dtype=torch.float, device='cuda')
+                    # lhs @ rhs
                     dist.all_reduce(torch.ones(1, dtype=torch.float, device='cuda'))
                 for _ in range(num_tests):
                     fn()
