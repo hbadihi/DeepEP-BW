@@ -43,16 +43,17 @@ def run_experiment(name, gpu_config, imbalance_test, num_runs=5):
     if imbalance_test:
         cmd += " --imbalance-test"
     
-    # Create output filename with timestamp
+    # Create output filename with timestamp and use absolute path
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_file = f"results_{name}_{timestamp}.csv"
+    output_file_abs = os.path.abspath(output_file)
     
     # Build the benchmark runner command
     benchmark_cmd = [
         "python3", "benchmark_runner.py",
         "-c", cmd,
         "-n", str(num_runs),
-        "-o", output_file
+        "-o", output_file_abs
     ]
     
     print(f"Command: {' '.join(benchmark_cmd)}")
@@ -71,7 +72,24 @@ def run_experiment(name, gpu_config, imbalance_test, num_runs=5):
         # Check if successful
         if result.returncode == 0:
             print(f"✓ Experiment '{name}' completed successfully")
-            print(f"  Output saved to: {output_file}")
+            
+            # Debug: show what benchmark_runner reported
+            if result.stdout:
+                if "Results saved to:" in result.stdout:
+                    for line in result.stdout.split('\n'):
+                        if "Results saved to:" in line:
+                            print(f"  Benchmark runner reported: {line.strip()}")
+            
+            # Verify the file actually exists (check both relative and absolute paths)
+            if os.path.exists(output_file_abs):
+                print(f"  Output saved to: {output_file_abs}")
+            elif os.path.exists(output_file):
+                print(f"  Output saved to: {output_file}")
+                output_file_abs = os.path.abspath(output_file)
+            else:
+                print(f"  ⚠ Warning: Output file not found after completion")
+                print(f"    Looked for: {output_file_abs}")
+                print(f"    Also tried: {output_file}")
             
             # Extract summary from output
             if "✓ Results saved to:" in result.stdout:
@@ -90,16 +108,21 @@ def run_experiment(name, gpu_config, imbalance_test, num_runs=5):
             print(f"  Return code: {result.returncode}")
             if result.stderr:
                 print(f"  Error: {result.stderr[:500]}")  # First 500 chars of error
+            # Return None on failure
+            return None
                 
     except subprocess.TimeoutExpired:
         print(f"✗ Experiment '{name}' timed out (>30 minutes)")
+        return None
     except Exception as e:
         print(f"✗ Unexpected error in experiment '{name}': {e}")
+        return None
     
     # Small delay between experiments
     time.sleep(2)
     
-    return output_file
+    # Return the absolute path if we get here
+    return output_file_abs if 'output_file_abs' in locals() else None
 
 
 def main():
@@ -138,8 +161,13 @@ def main():
                 imbalance_test=imbalance,
                 num_runs=5
             )
-            results_files.append((exp_name, output_file))
-            successful_experiments += 1
+            # Only add to results if file actually exists
+            if output_file and os.path.exists(output_file):
+                results_files.append((exp_name, output_file))
+                successful_experiments += 1
+            else:
+                print(f"⚠ Warning: Output file for {exp_name} not found")
+                failed_experiments.append(exp_name)
         except Exception as e:
             print(f"Failed to run experiment {exp_name}: {e}")
             failed_experiments.append(exp_name)
@@ -197,7 +225,169 @@ def main():
                 f.write(f"  - {exp}\n")
     
     print(f"\nSummary saved to: {summary_file}")
+    
+    # Create combined CSV tables
+    print("\n" + "=" * 80)
+    print("CREATING COMBINED CSV TABLES")
+    print("=" * 80)
+    
+    if results_files:
+        create_combined_tables(results_files)
+    
     print("\n✅ All experiments completed!")
+
+
+def create_combined_tables(results_files):
+    """
+    Create 5 combined CSV tables from all experiment results
+    """
+    import pandas as pd
+    
+    print(f"\nAttempting to combine {len(results_files)} result files...")
+    
+    # Read all result files
+    all_data = []
+    
+    for exp_name, filename in results_files:
+        print(f"  Checking {exp_name}: {filename}")
+        if os.path.exists(filename):
+            try:
+                df = pd.read_csv(filename)
+                print(f"    ✓ Read {len(df)} rows")
+                # Add experiment name as a column
+                df['Experiment'] = exp_name
+                all_data.append(df)
+            except Exception as e:
+                print(f"    ✗ Error reading: {e}")
+        else:
+            print(f"    ✗ File not found")
+    
+    if not all_data:
+        print("\n⚠ No data to combine - no CSV files could be read")
+        print("  Please check that the experiments generated output files")
+        return
+    
+    # Combine all dataframes
+    combined_df = pd.concat(all_data, ignore_index=True)
+    
+    # Create timestamp for output files
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # Define the 5 tables to create
+    tables = [
+        ("dispatch_combine", "dispatch + combine"),
+        ("combine_only", "combine"),
+        ("dispatch_only", "dispatch"),
+        ("combine_send_recv", ["combine send", "combine recv"]),
+        ("dispatch_send_recv", ["dispatch send", "dispatch recv"])
+    ]
+    
+    # Common columns to keep for the summary
+    summary_columns = ['Experiment', 'Event', 'GPU Configuration', 'Imbalance test',
+                       'avg bandwidth [GB/s]', 'avg_t [us]', 'avg_t_send [us]', 
+                       'avg_t_recv [us]', 'Std deviation [GB/s]']
+    
+    # Add rank columns
+    for i in range(8):
+        summary_columns.append(f'Avg. rank{i} BW [GB/s]')
+    
+    created_files = []
+    
+    for table_name, event_filter in tables:
+        # Filter data for specific events
+        if isinstance(event_filter, list):
+            # Multiple events (for send/recv tables)
+            filtered_df = combined_df[combined_df['Event'].isin(event_filter)]
+        else:
+            # Single event
+            filtered_df = combined_df[combined_df['Event'] == event_filter]
+        
+        if not filtered_df.empty:
+            # Select only available columns
+            available_cols = [col for col in summary_columns if col in filtered_df.columns]
+            filtered_df = filtered_df[available_cols]
+            
+            # Sort by experiment name and event (for send/recv tables)
+            if isinstance(event_filter, list):
+                filtered_df = filtered_df.sort_values(['Experiment', 'Event'])
+            else:
+                filtered_df = filtered_df.sort_values('Experiment')
+            
+            # Save to CSV
+            output_file = f"combined_{table_name}_{timestamp}.csv"
+            filtered_df.to_csv(output_file, index=False, float_format='%.2f')
+            created_files.append(output_file)
+            
+            print(f"✓ Created: {output_file} ({len(filtered_df)} rows)")
+            
+            # Also create a pivot table for better readability
+            if not isinstance(event_filter, list):
+                # For single event tables, create a pivot showing bandwidth across experiments
+                pivot_file = f"pivot_{table_name}_{timestamp}.csv"
+                
+                # Select key columns for pivot
+                pivot_data = filtered_df[['Experiment', 'GPU Configuration', 
+                                         'Imbalance test', 'avg bandwidth [GB/s]', 
+                                         'avg_t [us]', 'Std deviation [GB/s]']]
+                
+                # Sort by imbalance test and experiment name
+                pivot_data = pivot_data.sort_values(['Imbalance test', 'Experiment'])
+                
+                pivot_data.to_csv(pivot_file, index=False, float_format='%.2f')
+                created_files.append(pivot_file)
+                print(f"✓ Created pivot table: {pivot_file}")
+        else:
+            print(f"⚠ No data found for {table_name}")
+    
+    # Create a master combined file with all events
+    master_file = f"combined_all_events_{timestamp}.csv"
+    combined_df.to_csv(master_file, index=False, float_format='%.2f')
+    created_files.append(master_file)
+    print(f"✓ Created master file: {master_file} ({len(combined_df)} rows)")
+    
+    # Create a summary statistics file
+    create_summary_statistics(combined_df, timestamp)
+    
+    return created_files
+
+
+def create_summary_statistics(df, timestamp):
+    """
+    Create summary statistics across all experiments
+    """
+    import pandas as pd
+    
+    summary_file = f"summary_statistics_{timestamp}.csv"
+    
+    # Calculate statistics for dispatch + combine events
+    dispatch_combine = df[df['Event'] == 'dispatch + combine']
+    
+    if not dispatch_combine.empty:
+        # Group by imbalance test
+        stats = []
+        
+        for imbalance in [False, True]:
+            imb_data = dispatch_combine[dispatch_combine['Imbalance test'] == imbalance]
+            if not imb_data.empty:
+                stats.append({
+                    'Imbalance Test': 'Yes' if imbalance else 'No',
+                    'Mean Bandwidth [GB/s]': imb_data['avg bandwidth [GB/s]'].mean(),
+                    'Std Bandwidth [GB/s]': imb_data['avg bandwidth [GB/s]'].std(),
+                    'Min Bandwidth [GB/s]': imb_data['avg bandwidth [GB/s]'].min(),
+                    'Max Bandwidth [GB/s]': imb_data['avg bandwidth [GB/s]'].max(),
+                    'Mean Time [us]': imb_data['avg_t [us]'].mean(),
+                    'Std Time [us]': imb_data['avg_t [us]'].std(),
+                })
+        
+        if stats:
+            stats_df = pd.DataFrame(stats)
+            stats_df.to_csv(summary_file, index=False, float_format='%.2f')
+            print(f"✓ Created summary statistics: {summary_file}")
+            
+            # Print summary to console
+            print("\nSummary Statistics (Dispatch + Combine):")
+            print("-" * 40)
+            print(stats_df.to_string(index=False))
 
 
 if __name__ == "__main__":

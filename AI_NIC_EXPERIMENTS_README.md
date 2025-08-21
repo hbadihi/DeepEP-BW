@@ -20,7 +20,7 @@ The experiments test the following configurations:
 ## Scripts Overview
 
 ### 1. `ai_nic_sharing_experiments.py`
-Main script that runs all experiments with 5 runs each.
+Main script that runs all experiments with 5 runs each and automatically creates combined tables.
 
 **Usage:**
 ```bash
@@ -31,12 +31,21 @@ python3 ai_nic_sharing_experiments.py
 - Runs all 8 experiment configurations automatically
 - Each experiment runs 5 times for statistical reliability
 - Generates individual CSV files for each experiment
+- **Automatically creates 5 combined CSV tables after all experiments**
 - Creates a summary file with all experiment details
 - Shows progress and results in real-time
 
 **Output Files:**
 - `results_<experiment_name>_<timestamp>.csv` - Individual experiment results
 - `experiment_summary_<timestamp>.txt` - Overall summary of all experiments
+- **Combined Tables (automatically generated):**
+  - `combined_dispatch_combine_<timestamp>.csv` - Dispatch + Combine performance
+  - `combined_dispatch_only_<timestamp>.csv` - Dispatch only performance
+  - `combined_combine_only_<timestamp>.csv` - Combine only performance
+  - `combined_dispatch_send_recv_<timestamp>.csv` - Dispatch Send/Recv times
+  - `combined_combine_send_recv_<timestamp>.csv` - Combine Send/Recv times
+  - `combined_all_events_<timestamp>.csv` - Master file with all events
+  - `summary_statistics_<timestamp>.csv` - Statistical summary
 
 ### 2. `test_ai_nic_experiments.py`
 Quick test script to verify setup before running full experiments.
@@ -52,16 +61,34 @@ python3 test_ai_nic_experiments.py
 - Single run per configuration
 - Helps identify setup issues quickly
 
-### 3. `combine_experiment_results.py`
-Combines all experiment CSV files into a single summary.
+### 3. `create_combined_tables.py`
+Standalone script to create the 5 combined CSV tables from existing result files.
+
+**Usage:**
+```bash
+# Create tables from all results_*.csv files
+python3 create_combined_tables.py
+
+# Create tables from specific pattern
+python3 create_combined_tables.py "results_*imbalanced*.csv"
+```
+
+**Output Files (5 Combined Tables):**
+- `combined_dispatch_combine_<timestamp>.csv` - Dispatch + Combine table
+- `combined_dispatch_only_<timestamp>.csv` - Dispatch only table
+- `combined_combine_only_<timestamp>.csv` - Combine only table
+- `combined_dispatch_send_recv_<timestamp>.csv` - Dispatch Send/Recv table
+- `combined_combine_send_recv_<timestamp>.csv` - Combine Send/Recv table
+- `combined_all_events_<timestamp>.csv` - Master file with all events
+- `performance_summary_<timestamp>.txt` - Detailed text report
+
+### 4. `combine_experiment_results.py`
+Alternative script for creating summary tables with LaTeX support.
 
 **Usage:**
 ```bash
 # Combine all results_*.csv files
 python3 combine_experiment_results.py
-
-# Combine specific pattern
-python3 combine_experiment_results.py "results_*imbalanced*.csv"
 
 # Generate LaTeX table
 python3 combine_experiment_results.py --latex
@@ -127,17 +154,33 @@ python3 combine_experiment_results.py --latex
 
 ```
 DeepEP/
-├── results_1-to-1_20241121_140000.csv
-├── results_2-to-1-1x_20241121_140500.csv
-├── results_2-to-1-2x_20241121_141000.csv
-├── results_all-to-all_20241121_141500.csv
-├── results_1-to-1-imbalanced_20241121_142000.csv
-├── results_2-to-1-1x-imbalanced_20241121_142500.csv
-├── results_2-to-1-2x-imbalanced_20241121_143000.csv
-├── results_all-to-all-imbalanced_20241121_143500.csv
-├── experiment_summary_20241121_144000.txt
-├── combined_results_20241121_144500.csv
-└── comparison_table_20241121_144500.csv
+├── Individual Results (8 files)
+│   ├── results_1-to-1_20241121_140000.csv
+│   ├── results_2-to-1-1x_20241121_140500.csv
+│   ├── results_2-to-1-2x_20241121_141000.csv
+│   ├── results_all-to-all_20241121_141500.csv
+│   ├── results_1-to-1-imbalanced_20241121_142000.csv
+│   ├── results_2-to-1-1x-imbalanced_20241121_142500.csv
+│   ├── results_2-to-1-2x-imbalanced_20241121_143000.csv
+│   └── results_all-to-all-imbalanced_20241121_143500.csv
+│
+├── Combined Tables (auto-generated, 5 main tables)
+│   ├── combined_dispatch_combine_20241121_144000.csv
+│   ├── combined_dispatch_only_20241121_144000.csv
+│   ├── combined_combine_only_20241121_144000.csv
+│   ├── combined_dispatch_send_recv_20241121_144000.csv
+│   ├── combined_combine_send_recv_20241121_144000.csv
+│   └── combined_all_events_20241121_144000.csv
+│
+├── Summary Files
+│   ├── experiment_summary_20241121_144000.txt
+│   ├── summary_statistics_20241121_144000.csv
+│   └── performance_summary_20241121_144000.txt
+│
+└── Pivot Tables (optional)
+    ├── pivot_dispatch_combine_20241121_144000.csv
+    ├── pivot_dispatch_only_20241121_144000.csv
+    └── pivot_combine_only_20241121_144000.csv
 ```
 
 ## Troubleshooting
