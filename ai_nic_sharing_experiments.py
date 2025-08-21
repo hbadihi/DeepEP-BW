@@ -10,7 +10,7 @@ import sys
 from datetime import datetime
 import time
 
-def run_experiment(name, gpu_config, imbalance_test, num_runs=5):
+def run_experiment(name, gpu_config, imbalance_test, output_dir, num_runs=5):
     """
     Run a single experiment with the specified configuration
     
@@ -18,6 +18,7 @@ def run_experiment(name, gpu_config, imbalance_test, num_runs=5):
         name: Descriptive name for the experiment
         gpu_config: GPU configuration string (e.g., "0,2,4,6" or "all")
         imbalance_test: Boolean, whether to include --imbalance-test flag
+        output_dir: Directory where output files will be saved
         num_runs: Number of runs per experiment (default 5)
     """
     print(f"\n{'='*80}")
@@ -43,10 +44,10 @@ def run_experiment(name, gpu_config, imbalance_test, num_runs=5):
     if imbalance_test:
         cmd += " --imbalance-test"
     
-    # Create output filename with timestamp and use absolute path
+    # Create output filename with timestamp in the output directory
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_file = f"results_{name}_{timestamp}.csv"
-    output_file_abs = os.path.abspath(output_file)
+    output_file_abs = os.path.join(os.path.abspath(output_dir), output_file)
     
     # Build the benchmark runner command
     benchmark_cmd = [
@@ -73,23 +74,21 @@ def run_experiment(name, gpu_config, imbalance_test, num_runs=5):
         if result.returncode == 0:
             print(f"✓ Experiment '{name}' completed successfully")
             
-            # Debug: show what benchmark_runner reported
+            # Extract and show log directory from benchmark_runner output
             if result.stdout:
-                if "Results saved to:" in result.stdout:
-                    for line in result.stdout.split('\n'):
-                        if "Results saved to:" in line:
-                            print(f"  Benchmark runner reported: {line.strip()}")
+                for line in result.stdout.split('\n'):
+                    if "Log directory:" in line:
+                        log_dir = line.split("Log directory:")[-1].strip()
+                        print(f"  Experiment logs saved to: {log_dir}")
+                    if "Results saved to:" in line:
+                        print(f"  Benchmark runner reported: {line.strip()}")
             
-            # Verify the file actually exists (check both relative and absolute paths)
+            # Verify the file actually exists
             if os.path.exists(output_file_abs):
-                print(f"  Output saved to: {output_file_abs}")
-            elif os.path.exists(output_file):
-                print(f"  Output saved to: {output_file}")
-                output_file_abs = os.path.abspath(output_file)
+                print(f"  Results CSV saved to: {os.path.basename(output_file_abs)}")
             else:
                 print(f"  ⚠ Warning: Output file not found after completion")
-                print(f"    Looked for: {output_file_abs}")
-                print(f"    Also tried: {output_file}")
+                print(f"    Expected at: {output_file_abs}")
             
             # Extract summary from output
             if "✓ Results saved to:" in result.stdout:
@@ -134,6 +133,16 @@ def main():
     print("=" * 80)
     print(f"Start Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
+    # Create output directory for all results
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = f"nic_experiments_{timestamp}"
+    os.makedirs(output_dir, exist_ok=True)
+    output_dir_abs = os.path.abspath(output_dir)
+    
+    print(f"\nOutput Directory: {output_dir_abs}")
+    print("All results will be saved here")
+    print("-" * 40)
+    
     # Define all experiments based on the table
     experiments = [
         # Name, GPU Configuration, Imbalance Test
@@ -159,6 +168,7 @@ def main():
                 name=exp_name,
                 gpu_config=gpu_config,
                 imbalance_test=imbalance,
+                output_dir=output_dir,
                 num_runs=5
             )
             # Only add to results if file actually exists
@@ -189,14 +199,16 @@ def main():
     for exp_name, filename in results_files:
         if os.path.exists(filename):
             size = os.path.getsize(filename) / 1024  # Size in KB
-            print(f"  {exp_name:30} -> {filename} ({size:.1f} KB)")
+            # Show relative path within output directory
+            rel_path = os.path.basename(filename)
+            print(f"  {exp_name:30} -> {rel_path} ({size:.1f} KB)")
         else:
-            print(f"  {exp_name:30} -> {filename} (not found)")
+            print(f"  {exp_name:30} -> {os.path.basename(filename)} (not found)")
     
     print(f"\nEnd Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
-    # Create a master summary file
-    summary_file = f"experiment_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+    # Create a master summary file in the output directory
+    summary_file = os.path.join(output_dir, f"experiment_summary_{timestamp}.txt")
     with open(summary_file, 'w') as f:
         f.write("AI NIC SHARING EXPERIMENTS SUMMARY\n")
         f.write("=" * 80 + "\n")
@@ -232,14 +244,25 @@ def main():
     print("=" * 80)
     
     if results_files:
-        create_combined_tables(results_files)
+        create_combined_tables(results_files, output_dir)
     
-    print("\n✅ All experiments completed!")
+    print("\n" + "=" * 80)
+    print("✅ All experiments completed!")
+    print("=" * 80)
+    print(f"\n📁 All results saved in: {output_dir_abs}")
+    print(f"   View results with: cd {output_dir} && ls -la")
+    print(f"   Combined tables: combined_*.csv")
+    print(f"   Individual results: results_*.csv")
+    print(f"   Summary report: experiment_summary_{timestamp}.txt")
 
 
-def create_combined_tables(results_files):
+def create_combined_tables(results_files, output_dir):
     """
     Create 5 combined CSV tables from all experiment results
+    
+    Args:
+        results_files: List of tuples (experiment_name, file_path)
+        output_dir: Directory where combined tables will be saved
     """
     import pandas as pd
     
@@ -249,7 +272,7 @@ def create_combined_tables(results_files):
     all_data = []
     
     for exp_name, filename in results_files:
-        print(f"  Checking {exp_name}: {filename}")
+        print(f"  Checking {exp_name}: {os.path.basename(filename)}")
         if os.path.exists(filename):
             try:
                 df = pd.read_csv(filename)
@@ -313,17 +336,17 @@ def create_combined_tables(results_files):
             else:
                 filtered_df = filtered_df.sort_values('Experiment')
             
-            # Save to CSV
-            output_file = f"combined_{table_name}_{timestamp}.csv"
+            # Save to CSV in output directory
+            output_file = os.path.join(output_dir, f"combined_{table_name}_{timestamp}.csv")
             filtered_df.to_csv(output_file, index=False, float_format='%.2f')
             created_files.append(output_file)
             
-            print(f"✓ Created: {output_file} ({len(filtered_df)} rows)")
+            print(f"✓ Created: {os.path.basename(output_file)} ({len(filtered_df)} rows)")
             
             # Also create a pivot table for better readability
             if not isinstance(event_filter, list):
                 # For single event tables, create a pivot showing bandwidth across experiments
-                pivot_file = f"pivot_{table_name}_{timestamp}.csv"
+                pivot_file = os.path.join(output_dir, f"pivot_{table_name}_{timestamp}.csv")
                 
                 # Select key columns for pivot
                 pivot_data = filtered_df[['Experiment', 'GPU Configuration', 
@@ -335,29 +358,34 @@ def create_combined_tables(results_files):
                 
                 pivot_data.to_csv(pivot_file, index=False, float_format='%.2f')
                 created_files.append(pivot_file)
-                print(f"✓ Created pivot table: {pivot_file}")
+                print(f"✓ Created pivot table: {os.path.basename(pivot_file)}")
         else:
             print(f"⚠ No data found for {table_name}")
     
     # Create a master combined file with all events
-    master_file = f"combined_all_events_{timestamp}.csv"
+    master_file = os.path.join(output_dir, f"combined_all_events_{timestamp}.csv")
     combined_df.to_csv(master_file, index=False, float_format='%.2f')
     created_files.append(master_file)
-    print(f"✓ Created master file: {master_file} ({len(combined_df)} rows)")
+    print(f"✓ Created master file: {os.path.basename(master_file)} ({len(combined_df)} rows)")
     
     # Create a summary statistics file
-    create_summary_statistics(combined_df, timestamp)
+    create_summary_statistics(combined_df, timestamp, output_dir)
     
     return created_files
 
 
-def create_summary_statistics(df, timestamp):
+def create_summary_statistics(df, timestamp, output_dir):
     """
     Create summary statistics across all experiments
+    
+    Args:
+        df: Combined dataframe with all results
+        timestamp: Timestamp string for file naming
+        output_dir: Directory where output file will be saved
     """
     import pandas as pd
     
-    summary_file = f"summary_statistics_{timestamp}.csv"
+    summary_file = os.path.join(output_dir, f"summary_statistics_{timestamp}.csv")
     
     # Calculate statistics for dispatch + combine events
     dispatch_combine = df[df['Event'] == 'dispatch + combine']
@@ -382,7 +410,7 @@ def create_summary_statistics(df, timestamp):
         if stats:
             stats_df = pd.DataFrame(stats)
             stats_df.to_csv(summary_file, index=False, float_format='%.2f')
-            print(f"✓ Created summary statistics: {summary_file}")
+            print(f"✓ Created summary statistics: {os.path.basename(summary_file)}")
             
             # Print summary to console
             print("\nSummary Statistics (Dispatch + Combine):")
