@@ -75,10 +75,10 @@ time.sleep(0.1)
     print("Now testing with actual test_low_latency.py...")
     print("-" * 60)
     
-    # Test with actual command
+    # Test with actual command (using smaller parameters for faster testing)
     real_cmd = [
         "python3", "benchmark_runner.py",
-        "-c", "python3 tests/test_low_latency.py --disable-nvlink --num-tokens 256 --num-iterations 10",
+        "-c", "python3 tests/test_low_latency.py --disable-nvlink --num-tokens 128 --hidden 1024 --num-experts 32",
         "-n", "1",
         "-o", f"real_test_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
     ]

@@ -30,13 +30,16 @@ def run_quick_test(verbose=False):
         ("all-to-all-test", "all", False),
     ]
     
+    successful_tests = 0
+    failed_tests = []
+    
     for exp_name, gpu_config, imbalance in test_experiments:
         print(f"\nTesting: {exp_name}")
         print("-" * 40)
         
         # Build test command with minimal but sufficient parameters
-        # Using 256 tokens instead of 32 to ensure meaningful measurements
-        base_cmd = "python3 tests/test_low_latency.py --disable-nvlink --num-tokens 256 --num-iterations 10"
+        # Using smaller hidden dimension and fewer experts for faster testing
+        base_cmd = "python3 tests/test_low_latency.py --disable-nvlink --num-tokens 128 --hidden 1024 --num-experts 32"
         
         if gpu_config.lower() != "all":
             num_gpus = len(gpu_config.split(','))
@@ -80,19 +83,29 @@ def run_quick_test(verbose=False):
                         print("  " + "-" * 35 + "\n")
                     else:
                         # Extract key information from output
+                        has_successful_runs = False
                         for line in result.stdout.split('\n'):
                             if any(keyword in line for keyword in ["Results saved", "Log directory", "Successful runs", "No data", "Error", "⚠"]):
                                 print(f"  > {line.strip()}")
+                                if "Successful runs:" in line and "/1" in line:
+                                    # Check if we have 1/1 successful run
+                                    if "1/1" in line:
+                                        has_successful_runs = True
                 
                 # Check if CSV was created and has data
+                test_passed = False
                 if os.path.exists(output_file):
                     size = os.path.getsize(output_file)
                     if size > 100:  # Should be more than 100 bytes if it has data
                         print(f"  ✓ CSV created: {output_file} ({size} bytes)")
+                        test_passed = True
+                        successful_tests += 1
                     else:
                         print(f"  ⚠ CSV created but seems empty: {output_file} ({size} bytes)")
+                        failed_tests.append(exp_name)
                 else:
                     print(f"  ⚠ CSV file not created at: {output_file}")
+                    failed_tests.append(exp_name)
                     # Check if benchmark_runner mentioned a different location
                     if "Results saved to:" in result.stdout:
                         for line in result.stdout.split('\n'):
@@ -100,6 +113,9 @@ def run_quick_test(verbose=False):
                                 actual_file = line.split("Results saved to:")[-1].strip()
                                 if os.path.exists(actual_file):
                                     print(f"  ℹ Found CSV at: {actual_file}")
+                                    test_passed = True
+                                    successful_tests += 1
+                                    failed_tests.remove(exp_name)
                 
                 # Clean up test file if it exists
                 if os.path.exists(output_file):
@@ -108,6 +124,7 @@ def run_quick_test(verbose=False):
                     
             else:
                 print(f"✗ Test '{exp_name}' failed with code {result.returncode}")
+                failed_tests.append(exp_name)
                 if result.stderr:
                     print(f"  Error output:")
                     for line in result.stderr.split('\n')[:10]:  # First 10 lines
@@ -116,24 +133,48 @@ def run_quick_test(verbose=False):
                     
         except subprocess.TimeoutExpired:
             print(f"✗ Test '{exp_name}' timed out")
+            failed_tests.append(exp_name)
         except Exception as e:
             print(f"✗ Unexpected error: {e}")
+            failed_tests.append(exp_name)
     
     # Check for any CSV files that might have been created
-    csv_files = [f for f in os.listdir('.') if f.endswith('.csv')]
+    csv_files = [f for f in os.listdir('.') if f.endswith('.csv') and 'test_' in f]
     if csv_files:
-        print("\n⚠ Found CSV files in current directory:")
+        print("\n⚠ Found test CSV files that weren't cleaned up:")
         for f in csv_files[:5]:  # Show up to 5 files
             print(f"  • {f}")
         if len(csv_files) > 5:
             print(f"  ... and {len(csv_files) - 5} more")
+        print("\nCleaning up test files...")
+        for f in csv_files:
+            try:
+                os.remove(f)
+                print(f"  Removed: {f}")
+            except:
+                pass
     
     print("\n" + "=" * 60)
-    print("Test Complete!")
+    print("TEST RESULTS")
+    print("=" * 60)
+    print(f"Total tests: {len(test_experiments)}")
+    print(f"✓ Successful: {successful_tests}")
+    print(f"✗ Failed: {len(failed_tests)}")
+    
+    if failed_tests:
+        print("\nFailed tests:")
+        for test in failed_tests:
+            print(f"  - {test}")
+    
     print("\nNext steps:")
-    if not verbose:
-        print("• For detailed debug output, run: python3 test_ai_nic_experiments.py --verbose")
-    print("• If tests passed, run full experiments: python3 ai_nic_sharing_experiments.py")
+    if successful_tests == len(test_experiments):
+        print("✅ All tests passed! You can run the full experiments:")
+        print("   python3 ai_nic_sharing_experiments.py")
+    else:
+        if not verbose:
+            print("• For detailed debug output, run: python3 test_ai_nic_experiments.py --verbose")
+        print("• Check the logs in /tmp/benchmark_logs_* for details")
+        print("• Fix any issues before running full experiments")
     print("=" * 60)
 
 
