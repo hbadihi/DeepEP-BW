@@ -42,21 +42,30 @@ def parse_output(output: str):
             'avg_t': float(c_t)
         }
     
-    # Pattern for send/recv times
+    # Pattern for send/recv times - split into separate events
     send_recv_pattern = re.compile(
         r"\[rank (\d+)\] Dispatch send/recv time: ([\d.]+) \+ ([\d.]+) us \| "
         r"Combine send/recv time: ([\d.]+) \+ ([\d.]+) us"
     )
     for rank, d_send, d_recv, c_send, c_recv in send_recv_pattern.findall(output):
-        results['dispatch send/recv'][int(rank)] = {
+        # Split dispatch send/recv into separate send and recv events
+        results['dispatch send'][int(rank)] = {
             'send_time': float(d_send),
-            'recv_time': float(d_recv),
-            'total_time': float(d_send) + float(d_recv)
+            'avg_t_send': float(d_send)
         }
-        results['combine send/recv'][int(rank)] = {
+        results['dispatch recv'][int(rank)] = {
+            'recv_time': float(d_recv),
+            'avg_t_recv': float(d_recv)
+        }
+        
+        # Split combine send/recv into separate send and recv events
+        results['combine send'][int(rank)] = {
             'send_time': float(c_send),
+            'avg_t_send': float(c_send)
+        }
+        results['combine recv'][int(rank)] = {
             'recv_time': float(c_recv),
-            'total_time': float(c_send) + float(c_recv)
+            'avg_t_recv': float(c_recv)
         }
     
     return results
@@ -156,10 +165,14 @@ def aggregate_results(all_results, event_type, metric='bandwidth'):
             for rank, data in run_results[event_type].items():
                 if metric in data:
                     rank_data[rank].append(data[metric])
-                elif metric == 'bandwidth' and 'total_time' in data:
+                elif metric == 'bandwidth' and ('send_time' in data or 'recv_time' in data):
                     # For send/recv events, calculate bandwidth from time
-                    bw = calculate_bandwidth_from_time(data['total_time'], event_type)
-                    rank_data[rank].append(bw)
+                    if 'send' in event_type and 'send_time' in data:
+                        bw = calculate_bandwidth_from_time(data['send_time'], event_type)
+                        rank_data[rank].append(bw)
+                    elif 'recv' in event_type and 'recv_time' in data:
+                        bw = calculate_bandwidth_from_time(data['recv_time'], event_type)
+                        rank_data[rank].append(bw)
     
     return rank_data
 
@@ -193,17 +206,41 @@ def create_csv_row(command, event_type, all_results, num_ranks=8):
         for rank in range(num_ranks):
             row[f'Avg. rank{rank} BW [GB/s]'] = 0
     
-    # Get timing data
-    time_data = aggregate_results(all_results, event_type, 'avg_t')
-    if not time_data:
-        # Try total_time for send/recv events
-        time_data = aggregate_results(all_results, event_type, 'total_time')
-    
-    if time_data:
-        all_times = [v for rank_values in time_data.values() for v in rank_values]
-        row['avg_t [us]'] = np.mean(all_times) if all_times else 0
+    # Get timing data - handle send/recv events specially
+    if 'send' in event_type:
+        # For send events, use avg_t_send
+        time_data = aggregate_results(all_results, event_type, 'avg_t_send')
+        if time_data:
+            all_times = [v for rank_values in time_data.values() for v in rank_values]
+            row['avg_t [us]'] = np.mean(all_times) if all_times else 0
+            row['avg_t_send [us]'] = np.mean(all_times) if all_times else 0
+        else:
+            row['avg_t [us]'] = 0
+            row['avg_t_send [us]'] = 0
+        row['avg_t_recv [us]'] = 0  # Not applicable for send events
+        
+    elif 'recv' in event_type:
+        # For recv events, use avg_t_recv
+        time_data = aggregate_results(all_results, event_type, 'avg_t_recv')
+        if time_data:
+            all_times = [v for rank_values in time_data.values() for v in rank_values]
+            row['avg_t [us]'] = np.mean(all_times) if all_times else 0
+            row['avg_t_recv [us]'] = np.mean(all_times) if all_times else 0
+        else:
+            row['avg_t [us]'] = 0
+            row['avg_t_recv [us]'] = 0
+        row['avg_t_send [us]'] = 0  # Not applicable for recv events
+        
     else:
-        row['avg_t [us]'] = 0
+        # For non-send/recv events, use regular avg_t
+        time_data = aggregate_results(all_results, event_type, 'avg_t')
+        if time_data:
+            all_times = [v for rank_values in time_data.values() for v in rank_values]
+            row['avg_t [us]'] = np.mean(all_times) if all_times else 0
+        else:
+            row['avg_t [us]'] = 0
+        row['avg_t_send [us]'] = 0  # Not applicable
+        row['avg_t_recv [us]'] = 0  # Not applicable
     
     return row
 
@@ -278,7 +315,8 @@ def main(args):
         # Ensure all columns are present in the correct order
         columns_order = [
             'Event', 'GPU Configuration', 'Imbalance test',
-            'avg bandwidth [GB/s]', 'avg_t [us]', 'Std deviation [GB/s]'
+            'avg bandwidth [GB/s]', 'avg_t [us]', 'avg_t_send [us]', 'avg_t_recv [us]',
+            'Std deviation [GB/s]'
         ]
         for rank in range(8):
             columns_order.append(f'Avg. rank{rank} BW [GB/s]')
