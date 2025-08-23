@@ -160,7 +160,7 @@ def bench_kineto(fn, kernel_names: Optional[Union[str, tuple]] = None, num_tests
     if kernel_names is None:
         # Event-based benchmarking for dispatch and combine
         # Warmup
-        for _ in range(5):
+        for _ in range(num_tests):
             fn()
 
         start_dispatch_events = [torch.cuda.Event(enable_timing=True) for _ in range(num_tests)]
