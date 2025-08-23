@@ -180,7 +180,7 @@ def bench_kineto(fn, kernel_names: Optional[Union[str, tuple]] = None, num_tests
                end_event_dispatch=end_dispatch_events[i],
                start_event_combined=start_combined_events[i],
                end_event_combined=end_combined_events[i])
-        torch.cuda.synchronize()
+            torch.cuda.synchronize()
 
         dispatch_times = [s.elapsed_time(e) / 1e3 for s, e in zip(start_dispatch_events, end_dispatch_events)]
         combine_times = [s.elapsed_time(e) / 1e3 for s, e in zip(start_combined_events, end_combined_events)]
