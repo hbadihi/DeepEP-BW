@@ -168,11 +168,11 @@ def bench_kineto(fn, kernel_names: Optional[Union[str, tuple]] = None, num_tests
         start_combined_events = [torch.cuda.Event(enable_timing=True) for _ in range(num_tests)]
         end_combined_events = [torch.cuda.Event(enable_timing=True) for _ in range(num_tests)]
 
-        if barrier_comm_profiling:
-            lhs = torch.randn((8192, 8192), dtype=torch.float, device='cuda')
-            rhs = torch.randn((8192, 8192), dtype=torch.float, device='cuda')
-            lhs @ rhs
-            dist.all_reduce(torch.ones(1, dtype=torch.float, device='cuda'))
+        # if barrier_comm_profiling:
+        #     lhs = torch.randn((8192, 8192), dtype=torch.float, device='cuda')
+        #     rhs = torch.randn((8192, 8192), dtype=torch.float, device='cuda')
+        #     lhs @ rhs
+        #     dist.all_reduce(torch.ones(1, dtype=torch.float, device='cuda'))
         torch.cuda.synchronize()
 
         for i in range(num_tests):
