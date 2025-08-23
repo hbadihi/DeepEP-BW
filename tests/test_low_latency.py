@@ -41,7 +41,7 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
 
     if imbalance_test:
         # --- Start of custom workload imbalance logic ---
-        # The goal is to make rank 0 receive 16/9 of its balanced workload.
+        # The goal is to make rank 0 have double the workload of any other rank.
         if rank == 0:
             print('--- Workload Imbalance Test Activated ---')
 
@@ -57,8 +57,11 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
         reroutable_indices = torch.nonzero(is_not_rank0_expert, as_tuple=False)
 
         # 3. Calculate how many of these assignments we need to reroute to rank 0.
-        # We need to move (7/9)X assignments to achieve the target.
-        num_to_reroute = int(round((7/9) * assignments_per_rank_X))
+        # Let T_i be the workload for rank i. We want T_0 = 2 * T_i for i > 0.
+        # Total assignments N = T_0 + (R-1)T_1 = 2T_1 + (R-1)T_1 = (R+1)T_1, so T_1=N/(R+1) and T_0=2N/(R+1).
+        # The number to reroute is T_0 - T_balanced = 2N/(R+1) - N/R = N*(R-1)/(R*(R+1))
+        # This is equivalent to: assignments_per_rank_X * (num_ranks - 1) / (num_ranks + 1)
+        num_to_reroute = int(round(assignments_per_rank_X * (num_ranks - 1) / (num_ranks + 1)))
         
         # Ensure we don't try to reroute more assignments than are available.
         num_to_reroute = min(num_to_reroute, reroutable_indices.shape[0])
@@ -79,10 +82,12 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
         if rank == 0:
             # --- Verification Prints ---
             assignments_to_rank0 = (topk_idx < num_local_experts).sum().item()
-            expected_rank0_assignments = (16/9) * assignments_per_rank_X
+            total_assignments = num_tokens * num_topk
+            expected_rank0_assignments = 2 * total_assignments / (num_ranks + 1)
+            
             print(f'Balanced assignments per rank (X): {assignments_per_rank_X:.0f}')
             print(f'Rerouting {num_to_reroute} assignments to rank 0...')
-            print(f'Expected assignments for rank 0: {expected_rank0_assignments:.0f} (16/9 * X)')
+            print(f'Expected assignments for rank 0: {expected_rank0_assignments:.0f}')
             print(f'Actual assignments for rank 0:   {assignments_to_rank0}')
             print(f'Actual workload ratio for rank 0 vs balanced: {assignments_to_rank0 / assignments_per_rank_X:.2f}x')
             print('-----------------------------------------', flush=True)

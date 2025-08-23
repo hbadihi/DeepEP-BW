@@ -174,7 +174,7 @@ def main():
                 gpu_config=gpu_config,
                 imbalance_test=imbalance,
                 output_dir=output_dir,
-                num_runs=5
+                num_runs=10
             )
             # Only add to results if file actually exists
             if output_file and os.path.exists(output_file):
