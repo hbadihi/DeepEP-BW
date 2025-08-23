@@ -175,14 +175,27 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
         hook()
 
     # noinspection PyShadowingNames
-    def test_func(return_recv_hook: bool):
+    def test_func(return_recv_hook: bool,
+                  start_event_dispatch: torch.cuda.Event = None,
+                  end_event_dispatch: torch.cuda.Event = None,
+                  start_event_combined: torch.cuda.Event = None,
+                  end_event_combined: torch.cuda.Event = None):
+        if start_event_dispatch:
+            start_event_dispatch.record()
         recv_x, recv_count, handle, event, hook = \
             buffer.low_latency_dispatch(current_x, topk_idx, num_tokens, num_experts,
                                         cumulative_local_expert_recv_stats=cumulative_local_expert_recv_stats,
                                         use_fp8=True, async_finish=False, return_recv_hook=return_recv_hook)
+        if end_event_dispatch:
+            end_event_dispatch.record()
+
         large_gemm_with_hook(hook) if return_recv_hook else None
+        if start_event_combined:
+            start_event_combined.record()
         combined_x, event, hook = buffer.low_latency_combine(simulated_gemm_x, topk_idx, topk_weights, handle,
                                                              use_logfmt=use_logfmt, return_recv_hook=return_recv_hook)
+        if end_event_combined:
+            end_event_combined.record()
         large_gemm_with_hook(hook) if return_recv_hook else None
 
     # Calculate bandwidth

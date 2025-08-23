@@ -154,9 +154,39 @@ class suppress_stdout_stderr:
         self.errnull_file.close()
 
 
-def bench_kineto(fn, kernel_names: Union[str, tuple], num_tests: int = 30, suppress_kineto_output: bool = False,
+def bench_kineto(fn, kernel_names: Optional[Union[str, tuple]] = None, num_tests: int = 30, suppress_kineto_output: bool = False,
                  trace_path: Optional[str] = None, barrier_comm_profiling: bool = False,
                  num_kernels_per_period: int = 1):
+    if kernel_names is None:
+        # Event-based benchmarking for dispatch and combine
+        # Warmup
+        for _ in range(5):
+            fn()
+
+        start_dispatch_events = [torch.cuda.Event(enable_timing=True) for _ in range(num_tests)]
+        end_dispatch_events = [torch.cuda.Event(enable_timing=True) for _ in range(num_tests)]
+        start_combined_events = [torch.cuda.Event(enable_timing=True) for _ in range(num_tests)]
+        end_combined_events = [torch.cuda.Event(enable_timing=True) for _ in range(num_tests)]
+
+        if barrier_comm_profiling:
+            lhs = torch.randn((8192, 8192), dtype=torch.float, device='cuda')
+            rhs = torch.randn((8192, 8192), dtype=torch.float, device='cuda')
+            lhs @ rhs
+            dist.all_reduce(torch.ones(1, dtype=torch.float, device='cuda'))
+        torch.cuda.synchronize()
+
+        for i in range(num_tests):
+            fn(start_event_dispatch=start_dispatch_events[i],
+               end_event_dispatch=end_dispatch_events[i],
+               start_event_combined=start_combined_events[i],
+               end_event_combined=end_combined_events[i])
+        torch.cuda.synchronize()
+
+        dispatch_times = [s.elapsed_time(e) / 1e3 for s, e in zip(start_dispatch_events, end_dispatch_events)]
+        combine_times = [s.elapsed_time(e) / 1e3 for s, e in zip(start_combined_events, end_combined_events)]
+
+        return np.average(dispatch_times), np.average(combine_times)
+
     # Profile
     suppress = suppress_stdout_stderr if suppress_kineto_output else empty_suppress
     with suppress():
@@ -165,9 +195,9 @@ def bench_kineto(fn, kernel_names: Union[str, tuple], num_tests: int = 30, suppr
             for i in range(2):
                 # NOTES: use a large kernel and a barrier to eliminate the unbalanced CPU launch overhead
                 if barrier_comm_profiling:
-                    # lhs = torch.randn((8192, 8192), dtype=torch.float, device='cuda')
-                    # rhs = torch.randn((8192, 8192), dtype=torch.float, device='cuda')
-                    # lhs @ rhs
+                    lhs = torch.randn((8192, 8192), dtype=torch.float, device='cuda')
+                    rhs = torch.randn((8192, 8192), dtype=torch.float, device='cuda')
+                    lhs @ rhs
                     dist.all_reduce(torch.ones(1, dtype=torch.float, device='cuda'))
                 for _ in range(num_tests):
                     fn()
