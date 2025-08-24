@@ -208,7 +208,7 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
     num_logfmt10_bytes = hidden * 10 / 8 + hidden / 128 * 4
     num_dispatch_comm_bytes, num_combine_comm_bytes = 0, 0
     for i in range(num_tokens):
-        num_selections = (topk_idx[i] != -1).sum().item()
+        num_selections = ((topk_idx[i] != -1) & (topk_idx[i] // num_local_experts != rank)).sum().item()
         num_dispatch_comm_bytes += num_fp8_bytes * num_selections
         num_combine_comm_bytes += (num_logfmt10_bytes if use_logfmt else num_bf16_bytes) * num_selections
 
