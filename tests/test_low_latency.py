@@ -237,14 +237,36 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
         if rank == 0:
             def print_matrix(name, matrix):
                 print(f'{name} (cycles, receiver_rank x sender_rank):')
-                header = "      " + "".join([f"S:{i:<8}" for i in range(num_ranks)])
+
+                # Determine the maximum width needed for any number in the matrix, with commas
+                max_width = 0
+                for val in matrix.flatten():
+                    width = len(f"{val.item():,}")
+                    if width > max_width:
+                        max_width = width
+
+                # Ensure column width is sufficient for header (e.g., "S:15")
+                max_header_width = len(f"S:{num_ranks-1}")
+                col_width = max(max_width, max_header_width)
+
+                # Header
+                # Space for "R:xxxx [" which is 8 characters
+                header = " " * 8
+                header_parts = []
+                for j in range(num_ranks):
+                    header_parts.append(f"{f'S:{j}':^{col_width}}")
+                header += ", ".join(header_parts)
                 print(header)
+
+                # Matrix rows
                 for i in range(num_ranks):
                     row_str = f"R:{i:<4} ["
+                    value_parts = []
                     for j in range(num_ranks):
-                        row_str += f"{matrix[i, j]:<8}"
-                        if j < num_ranks - 1:
-                            row_str += ","
+                        # Format number with commas and right alignment
+                        formatted_num = f"{matrix[i, j].item():,}"
+                        value_parts.append(f"{formatted_num:>{col_width}}")
+                    row_str += ", ".join(value_parts)
                     row_str += "]"
                     print(row_str)
 
