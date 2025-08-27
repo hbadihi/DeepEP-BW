@@ -235,13 +235,25 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
         dist.gather(dispatch_wait_recv_cost_stats, dispatch_stats_list if rank == 0 else None, dst=0, group=group)
         dist.gather(combine_wait_recv_cost_stats, combine_stats_list if rank == 0 else None, dst=0, group=group)
         if rank == 0:
+            def print_matrix(name, matrix):
+                print(f'{name} (cycles, receiver_rank x sender_rank):')
+                header = "      " + "".join([f"S:{i:<8}" for i in range(num_ranks)])
+                print(header)
+                for i in range(num_ranks):
+                    row_str = f"R:{i:<4} ["
+                    for j in range(num_ranks):
+                        row_str += f"{matrix[i, j]:<8}"
+                        if j < num_ranks - 1:
+                            row_str += ","
+                    row_str += "]"
+                    print(row_str)
+
             print('--- Diagnosis (Performance Test) ---')
             dispatch_matrix = torch.stack(dispatch_stats_list)
-            print('Dispatch wait cost (cycles, receiver_rank x sender_rank):')
-            print(dispatch_matrix)
+            print_matrix('Dispatch wait cost', dispatch_matrix)
+            print()
             combine_matrix = torch.stack(combine_stats_list)
-            print('Combine wait cost (cycles, receiver_rank x sender_rank):')
-            print(combine_matrix)
+            print_matrix('Combine wait cost', combine_matrix)
             print('------------------------------------', flush=True)
 
     print(f'[rank {rank}] Dispatch + combine bandwidth: {(num_dispatch_comm_bytes + num_combine_comm_bytes) / 1e9 / avg_t:.2f} GB/s, '
