@@ -225,9 +225,13 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
 
     # Dispatch + combine testing
     if diagnose:
-        dispatch_wait_recv_cost_stats.zero_()
-        combine_wait_recv_cost_stats.zero_()
-    avg_t, min_t, max_t = bench(partial(test_func, return_recv_hook=False))
+        def reset_stats():
+            dispatch_wait_recv_cost_stats.zero_()
+            combine_wait_recv_cost_stats.zero_()
+        pre_test_fn = reset_stats
+    else:
+        pre_test_fn = None
+    avg_t, min_t, max_t = bench(partial(test_func, return_recv_hook=False), pre_test_fn=pre_test_fn)
     if diagnose:
         group.barrier()
         dispatch_stats_list = [torch.zeros_like(dispatch_wait_recv_cost_stats) for _ in range(num_ranks)]
