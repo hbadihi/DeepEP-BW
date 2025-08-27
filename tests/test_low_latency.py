@@ -15,9 +15,16 @@ from utils import init_dist, bench, bench_kineto, calc_diff, hash_tensor, per_to
 def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
               rank: int, num_ranks: int, group: dist.ProcessGroup, buffer: deep_ep.Buffer,
               use_logfmt: bool = False, seed: int = 0,
-              imbalance_test: bool = False, export_trace: bool = False):
+              imbalance_test: bool = False, export_trace: bool = False, diagnose: bool = False):
     torch.manual_seed(seed + rank)
     random.seed(seed + rank)
+
+    if diagnose:
+        dispatch_wait_recv_cost_stats = torch.zeros((num_ranks, ), dtype=torch.int64, device='cuda')
+        combine_wait_recv_cost_stats = torch.zeros((num_ranks, ), dtype=torch.int64, device='cuda')
+    else:
+        dispatch_wait_recv_cost_stats = None
+        combine_wait_recv_cost_stats = None
 
     assert num_experts % num_ranks == 0
     num_local_experts = num_experts // num_ranks
@@ -114,6 +121,7 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
                                 buffer.low_latency_dispatch(current_x, topk_idx, num_tokens, num_experts,
                                                             use_fp8=dispatch_use_fp8, round_scale=round_scale, use_ue8m0=use_ue8m0,
                                                             cumulative_local_expert_recv_stats=cumulative_local_expert_recv_stats,
+                                                            dispatch_wait_recv_cost_stats=dispatch_wait_recv_cost_stats,
                                                             async_finish=not return_recv_hook, return_recv_hook=return_recv_hook)
                             hook() if return_recv_hook else event.current_stream_wait()
                         packed_recv_x = (packed_recv_x[0], packed_recv_x[1].contiguous()) if dispatch_use_fp8 else packed_recv_x
@@ -164,6 +172,7 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
                             combined_x, event, hook = buffer.low_latency_combine(simulated_gemm_x, topk_idx, topk_weights, handle,
                                                                                 use_logfmt=use_logfmt,
                                                                                 async_finish=not return_recv_hook, zero_copy=zero_copy,
+                                                                                combine_wait_recv_cost_stats=combine_wait_recv_cost_stats,
                                                                                 return_recv_hook=return_recv_hook, out=out)
                             hook() if return_recv_hook else event.current_stream_wait()
                             if do_check:
@@ -190,6 +199,7 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
         recv_x, recv_count, handle, event, hook = \
             buffer.low_latency_dispatch(current_x, topk_idx, num_tokens, num_experts,
                                         cumulative_local_expert_recv_stats=cumulative_local_expert_recv_stats,
+                                        dispatch_wait_recv_cost_stats=dispatch_wait_recv_cost_stats,
                                         use_fp8=True, async_finish=False, return_recv_hook=return_recv_hook)
         if end_event_dispatch:
             end_event_dispatch.record()
@@ -198,7 +208,8 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
         if start_event_combined:
             start_event_combined.record()
         combined_x, event, hook = buffer.low_latency_combine(simulated_gemm_x, topk_idx, topk_weights, handle,
-                                                             use_logfmt=use_logfmt, return_recv_hook=return_recv_hook)
+                                                             use_logfmt=use_logfmt, return_recv_hook=return_recv_hook,
+                                                             combine_wait_recv_cost_stats=combine_wait_recv_cost_stats)
         if end_event_combined:
             end_event_combined.record()
         large_gemm_with_hook(hook) if return_recv_hook else None
@@ -213,7 +224,26 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
         num_combine_comm_bytes += (num_logfmt10_bytes if use_logfmt else num_bf16_bytes) * num_selections
 
     # Dispatch + combine testing
+    if diagnose:
+        dispatch_wait_recv_cost_stats.zero_()
+        combine_wait_recv_cost_stats.zero_()
     avg_t, min_t, max_t = bench(partial(test_func, return_recv_hook=False))
+    if diagnose:
+        group.barrier()
+        dispatch_stats_list = [torch.zeros_like(dispatch_wait_recv_cost_stats) for _ in range(num_ranks)]
+        combine_stats_list = [torch.zeros_like(combine_wait_recv_cost_stats) for _ in range(num_ranks)]
+        dist.gather(dispatch_wait_recv_cost_stats, dispatch_stats_list if rank == 0 else None, dst=0, group=group)
+        dist.gather(combine_wait_recv_cost_stats, combine_stats_list if rank == 0 else None, dst=0, group=group)
+        if rank == 0:
+            print('--- Diagnosis (Performance Test) ---')
+            dispatch_matrix = torch.stack(dispatch_stats_list)
+            print('Dispatch wait cost (cycles, receiver_rank x sender_rank):')
+            print(dispatch_matrix)
+            combine_matrix = torch.stack(combine_stats_list)
+            print('Combine wait cost (cycles, receiver_rank x sender_rank):')
+            print(combine_matrix)
+            print('------------------------------------', flush=True)
+
     print(f'[rank {rank}] Dispatch + combine bandwidth: {(num_dispatch_comm_bytes + num_combine_comm_bytes) / 1e9 / avg_t:.2f} GB/s, '
           f'avg_t={avg_t * 1e6:.2f} us, min_t={min_t * 1e6:.2f} us, max_t={max_t * 1e6:.2f} us', flush=True)
 
@@ -257,7 +287,8 @@ def test_loop(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
     try:
         test_main(num_tokens, hidden, num_experts, num_topk, rank, num_ranks, group, buffer,
                   use_logfmt=args.use_logfmt, seed=1,
-                  imbalance_test=args.imbalance_test, export_trace=args.export_trace)
+                  imbalance_test=args.imbalance_test, export_trace=args.export_trace,
+                  diagnose=args.diagnose)
 
         do_pressure_test = args.pressure_test
         for seed in range(int(1e9) if do_pressure_test else 0):
@@ -265,11 +296,13 @@ def test_loop(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
                 print(f'Testing with seed {seed} ...', flush=True)
             ref_hash = test_main(num_tokens, hidden, num_experts, num_topk, rank, num_ranks, group, buffer,
                                  use_logfmt=args.use_logfmt, seed=seed,
-                                 imbalance_test=args.imbalance_test, export_trace=args.export_trace)
+                                 imbalance_test=args.imbalance_test, export_trace=args.export_trace,
+                                 diagnose=args.diagnose)
             for i in range(20):
                 assert test_main(num_tokens, hidden, num_experts, num_topk, rank, num_ranks, group, buffer,
                                  use_logfmt=args.use_logfmt, seed=seed,
-                                 imbalance_test=args.imbalance_test, export_trace=args.export_trace) == ref_hash, f'Error: seed={seed}'
+                                 imbalance_test=args.imbalance_test, export_trace=args.export_trace,
+                                 diagnose=args.diagnose) == ref_hash, f'Error: seed={seed}'
     finally:
         # Destroy the buffer runtime and communication group
         buffer.destroy()
@@ -305,6 +338,8 @@ if __name__ == '__main__':
                         help='Master port for distributed communication (default: 8361)')
     parser.add_argument('--export-trace', action='store_true',
                         help='Export kineto trace to /tmp')
+    parser.add_argument('--diagnose', action='store_true',
+                        help='Whether to show diagnosis information')
     args = parser.parse_args()
 
     os.environ['MASTER_PORT'] = str(args.port)
