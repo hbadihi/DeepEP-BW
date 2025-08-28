@@ -217,7 +217,8 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
             end_event_combined.record()
         large_gemm_with_hook(hook) if return_recv_hook else None
 
-    def test_func_with_hook(start_event_dispatch_send: torch.cuda.Event = None,
+    def test_func_with_hook(return_recv_hook: bool,
+                            start_event_dispatch_send: torch.cuda.Event = None,
                             end_event_dispatch_send: torch.cuda.Event = None,
                             start_event_dispatch_recv: torch.cuda.Event = None,
                             end_event_dispatch_recv: torch.cuda.Event = None,
