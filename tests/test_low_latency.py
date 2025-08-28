@@ -9,7 +9,7 @@ from functools import partial
 from typing import Optional
 
 import deep_ep
-from utils import init_dist, bench, bench_kineto, calc_diff, hash_tensor, per_token_cast_back
+from utils import init_dist, bench, bench_kineto, bench_kineto_with_hook, calc_diff, hash_tensor, per_token_cast_back
 
 
 def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
@@ -188,6 +188,9 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
         mat_0 @ mat_1
         hook()
 
+    def call_recv_hook(hook):
+        hook()
+
     # noinspection PyShadowingNames
     def test_func(return_recv_hook: bool,
                   start_event_dispatch: torch.cuda.Event = None,
@@ -213,6 +216,41 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
         if end_event_combined:
             end_event_combined.record()
         large_gemm_with_hook(hook) if return_recv_hook else None
+
+    def test_func_with_hook(start_event_dispatch_send: torch.cuda.Event = None,
+                            end_event_dispatch_send: torch.cuda.Event = None,
+                            start_event_dispatch_recv: torch.cuda.Event = None,
+                            end_event_dispatch_recv: torch.cuda.Event = None,
+                            start_event_combined_send: torch.cuda.Event = None,
+                            end_event_combined_send: torch.cuda.Event = None,
+                            start_event_combined_recv: torch.cuda.Event = None,
+                            end_event_combined_recv: torch.cuda.Event = None):
+        if start_event_dispatch_send:
+            start_event_dispatch_send.record()
+        recv_x, recv_count, handle, event, hook = \
+            buffer.low_latency_dispatch(current_x, topk_idx, num_tokens, num_experts,
+                                        cumulative_local_expert_recv_stats=cumulative_local_expert_recv_stats,
+                                        dispatch_wait_recv_cost_stats=dispatch_wait_recv_cost_stats,
+                                        use_fp8=True, async_finish=False, return_recv_hook=return_recv_hook)
+        if end_event_dispatch_send:
+            end_event_dispatch_send.record()
+        if start_event_dispatch_recv:
+            start_event_dispatch_recv.record()
+        call_recv_hook(hook) if return_recv_hook else None
+        if end_event_dispatch_recv:
+            end_event_dispatch_recv.record()
+        if start_event_combined_send:
+            start_event_combined_send.record()
+        combined_x, event, hook = buffer.low_latency_combine(simulated_gemm_x, topk_idx, topk_weights, handle,
+                                                             use_logfmt=use_logfmt, return_recv_hook=return_recv_hook,
+                                                             combine_wait_recv_cost_stats=combine_wait_recv_cost_stats)
+        if end_event_combined_send:
+            end_event_combined_send.record()
+        if start_event_combined_recv:
+            start_event_combined_recv.record()
+        call_recv_hook(hook) if return_recv_hook else None
+        if end_event_combined_recv:
+            end_event_combined_recv.record()
 
     # Calculate bandwidth
     num_fp8_bytes, num_bf16_bytes = (hidden + hidden / 128 * 4 + 16), hidden * 2
@@ -295,17 +333,17 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
 
         if not return_recv_hook:
             # Event-based for bandwidth measurement
-            dispatch_t, combine_t = bench_kineto(partial(test_func, return_recv_hook=False), barrier_comm_profiling=True)
+            dispatch_t, combine_t = bench_kineto(partial(test_func, return_recv_hook=False), barrier_comm_profiling=False)
             print(f'[rank {rank}] Dispatch bandwidth: {num_dispatch_comm_bytes / 1e9 / dispatch_t:.2f} GB/s, avg_t={dispatch_t * 1e6:.2f} us | '
                   f'Combine bandwidth: {num_combine_comm_bytes / 1e9 / combine_t:.2f} GB/s, avg_t={combine_t * 1e6:.2f} us', flush=True)
         else:
             # Profiler-based for send/recv breakdown
-            dispatch_t, combine_t = bench_kineto(partial(test_func, return_recv_hook=True),
-                                                 kernel_names=('dispatch', 'combine'), barrier_comm_profiling=True,
+            send_dispatch_t, recv_dispatch_t, send_combine_t, recv_combine_t = bench_kineto_with_hook(partial(test_func_with_hook, return_recv_hook=True),
+                                                 None, barrier_comm_profiling=False,
                                                  suppress_kineto_output=not export_trace, num_kernels_per_period=2,
                                                  trace_path=trace_path)
-            print(f'[rank {rank}] Dispatch send/recv time: {dispatch_t[0] * 1e6:.2f} + {dispatch_t[1] * 1e6:.2f} us | '
-                  f'Combine send/recv time: {combine_t[0] * 1e6:.2f} + {combine_t[1] * 1e6:.2f} us', flush=True)
+            print(f'[rank {rank}] Dispatch send/recv time: {send_dispatch_t * 1e6:.2f} + {recv_dispatch_t * 1e6:.2f} us | '
+                  f'Combine send/recv time: {send_combine_t * 1e6:.2f} + {recv_combine_t * 1e6:.2f} us', flush=True)
     return hash_value
 
 

@@ -157,6 +157,43 @@ class suppress_stdout_stderr:
         self.errnull_file.close()
 
 
+def bench_kineto_with_hook(fn, kernel_names: Optional[Union[str, tuple]] = None, num_tests: int = 30, suppress_kineto_output: bool = False,
+                 trace_path: Optional[str] = None, barrier_comm_profiling: bool = False,
+                 num_kernels_per_period: int = 1):
+            # Event-based benchmarking for dispatch and combine
+        # Warmup
+        for _ in range(num_tests):
+            fn()
+
+        start_dispatch_send_events = [torch.cuda.Event(enable_timing=True) for _ in range(num_tests)]
+        end_dispatch_send_events = [torch.cuda.Event(enable_timing=True) for _ in range(num_tests)]
+        start_dispatch_recv_events = [torch.cuda.Event(enable_timing=True) for _ in range(num_tests)]
+        end_dispatch_recv_events = [torch.cuda.Event(enable_timing=True) for _ in range(num_tests)]
+        start_combined_send_events = [torch.cuda.Event(enable_timing=True) for _ in range(num_tests)]
+        end_combined_send_events = [torch.cuda.Event(enable_timing=True) for _ in range(num_tests)]
+        start_combined_recv_events = [torch.cuda.Event(enable_timing=True) for _ in range(num_tests)]
+        end_combined_recv_events = [torch.cuda.Event(enable_timing=True) for _ in range(num_tests)]
+        torch.cuda.synchronize()
+
+        for i in range(num_tests):
+            fn(start_event_dispatch_send=start_dispatch_send_events[i],
+               end_event_dispatch_send=end_dispatch_send_events[i],
+               start_event_dispatch_recv=start_dispatch_recv_events[i],
+               end_event_dispatch_recv=end_dispatch_recv_events[i],
+               start_event_combined_send=start_combined_send_events[i],
+               end_event_combined_send=end_combined_send_events[i],
+               start_event_combined_recv=start_combined_recv_events[i],
+               end_event_combined_recv=end_combined_recv_events[i])
+            torch.cuda.synchronize()
+
+        dispatch_send_times = [s.elapsed_time(e) / 1e3 for s, e in zip(start_dispatch_send_events, end_dispatch_send_events)]
+        dispatch_recv_times = [s.elapsed_time(e) / 1e3 for s, e in zip(start_dispatch_recv_events, end_dispatch_recv_events)]
+        combined_send_times = [s.elapsed_time(e) / 1e3 for s, e in zip(start_combined_send_events, end_combined_send_events)]
+        combined_recv_times = [s.elapsed_time(e) / 1e3 for s, e in zip(start_combined_recv_events, end_combined_recv_events)]
+
+        return np.average(dispatch_send_times), np.average(dispatch_recv_times), np.average(combined_send_times), np.average(combined_recv_times)
+
+
 def bench_kineto(fn, kernel_names: Optional[Union[str, tuple]] = None, num_tests: int = 30, suppress_kineto_output: bool = False,
                  trace_path: Optional[str] = None, barrier_comm_profiling: bool = False,
                  num_kernels_per_period: int = 1):
