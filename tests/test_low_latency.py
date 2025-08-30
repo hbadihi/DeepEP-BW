@@ -154,7 +154,7 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
 
         # Gather all dispatch counts on rank 0
         all_dispatch_counts = torch.zeros(num_ranks, num_ranks, dtype=torch.int, device='cuda')
-        dist.all_gather_into_tensor(all_dispatch_counts, dispatch_counts.view(1, -1).expand(num_ranks, -1), group=group)
+        dist.all_gather_into_tensor(all_dispatch_counts, dispatch_counts, group=group)
 
         if rank == 0:
             # all_dispatch_counts is now a matrix where all_dispatch_counts[i, j] is
