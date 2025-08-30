@@ -15,9 +15,45 @@ from utils import init_dist, bench, bench_kineto, bench_kineto_with_hook, calc_d
 def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
               rank: int, num_ranks: int, group: dist.ProcessGroup, buffer: deep_ep.Buffer,
               use_logfmt: bool = False, seed: int = 0,
-              imbalance_test: bool = False, export_trace: bool = False, diagnose: bool = False):
+              imbalance_test: bool = False, export_trace: bool = False, diagnose: bool = False,
+              print_dispatch_table: bool = False):
     torch.manual_seed(seed + rank)
     random.seed(seed + rank)
+
+    def print_matrix(name, matrix):
+        print(f'{name} (receiver_rank x sender_rank):')
+
+        # Determine the maximum width needed for any number in the matrix, with commas
+        max_width = 0
+        for val in matrix.flatten():
+            width = len(f"{val.item():,}")
+            if width > max_width:
+                max_width = width
+
+        # Ensure column width is sufficient for header (e.g., "S:15")
+        max_header_width = len(f"S:{num_ranks-1}")
+        col_width = max(max_width, max_header_width)
+
+        # Header
+        # Space for "R:xxxx [" which is 8 characters
+        header = " " * 8
+        header_parts = []
+        for j in range(num_ranks):
+            header_parts.append(f"{f'S:{j}':^{col_width}}")
+        header += ", ".join(header_parts)
+        print(header)
+
+        # Matrix rows
+        for i in range(num_ranks):
+            row_str = f"R:{i:<4} ["
+            value_parts = []
+            for j in range(num_ranks):
+                # Format number with commas and right alignment
+                formatted_num = f"{matrix[i, j].item():,}"
+                value_parts.append(f"{formatted_num:>{col_width}}")
+            row_str += ", ".join(value_parts)
+            row_str += "]"
+            print(row_str)
 
     if diagnose:
         dispatch_wait_recv_cost_stats = torch.zeros((num_ranks, ), dtype=torch.int64, device='cuda')
@@ -105,6 +141,26 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
     # Randomly mask some positions
     for i in range(10):
         topk_idx[random.randint(0, num_tokens - 1), random.randint(0, num_topk - 1)] = -1
+
+    if print_dispatch_table:
+        # Calculate how many tokens this rank sends to each other rank
+        dispatch_counts = torch.zeros(num_ranks, dtype=torch.int, device='cuda')
+        for i in range(num_ranks):
+            # Tokens sent to rank i go to experts from i*num_local_experts to (i+1)*num_local_experts -1
+            experts_on_rank_i_start = i * num_local_experts
+            experts_on_rank_i_end = (i + 1) * num_local_experts
+            mask = (topk_idx >= experts_on_rank_i_start) & (topk_idx < experts_on_rank_i_end)
+            dispatch_counts[i] = mask.sum()
+
+        # Gather all dispatch counts on rank 0
+        all_dispatch_counts = torch.zeros(num_ranks, num_ranks, dtype=torch.int, device='cuda')
+        dist.all_gather_into_tensor(all_dispatch_counts, dispatch_counts.view(1, -1).expand(num_ranks, -1), group=group)
+
+        if rank == 0:
+            # all_dispatch_counts is now a matrix where all_dispatch_counts[i, j] is
+            # the number of tokens sent from rank i to rank j.
+            # We want receiver_rank x sender_rank, so we need to transpose.
+            print_matrix('Token Dispatch Counts', all_dispatch_counts.T)
 
     # Check dispatch correctness
     do_check = True
@@ -278,47 +334,9 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
         dist.gather(dispatch_wait_recv_cost_stats, dispatch_stats_list if rank == 0 else None, dst=0, group=group)
         dist.gather(combine_wait_recv_cost_stats, combine_stats_list if rank == 0 else None, dst=0, group=group)
         if rank == 0:
-            def print_matrix(name, matrix):
-                print(f'{name} (cycles, receiver_rank x sender_rank):')
-
-                # Determine the maximum width needed for any number in the matrix, with commas
-                max_width = 0
-                for val in matrix.flatten():
-                    width = len(f"{val.item():,}")
-                    if width > max_width:
-                        max_width = width
-
-                # Ensure column width is sufficient for header (e.g., "S:15")
-                max_header_width = len(f"S:{num_ranks-1}")
-                col_width = max(max_width, max_header_width)
-
-                # Header
-                # Space for "R:xxxx [" which is 8 characters
-                header = " " * 8
-                header_parts = []
-                for j in range(num_ranks):
-                    header_parts.append(f"{f'S:{j}':^{col_width}}")
-                header += ", ".join(header_parts)
-                print(header)
-
-                # Matrix rows
-                for i in range(num_ranks):
-                    row_str = f"R:{i:<4} ["
-                    value_parts = []
-                    for j in range(num_ranks):
-                        # Format number with commas and right alignment
-                        formatted_num = f"{matrix[i, j].item():,}"
-                        value_parts.append(f"{formatted_num:>{col_width}}")
-                    row_str += ", ".join(value_parts)
-                    row_str += "]"
-                    print(row_str)
-
-            print('--- Diagnosis (Performance Test) ---')
-            dispatch_matrix = torch.stack(dispatch_stats_list)
-            print_matrix('Dispatch wait cost', dispatch_matrix)
+            print_matrix('Dispatch wait cost', torch.stack(dispatch_stats_list))
             print()
-            combine_matrix = torch.stack(combine_stats_list)
-            print_matrix('Combine wait cost', combine_matrix)
+            print_matrix('Combine wait cost', torch.stack(combine_stats_list))
             print('------------------------------------', flush=True)
 
     print(f'[rank {rank}] Dispatch + combine bandwidth: {(num_dispatch_comm_bytes + num_combine_comm_bytes) / 1e9 / avg_t:.2f} GB/s, '
@@ -365,7 +383,7 @@ def test_loop(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
         test_main(num_tokens, hidden, num_experts, num_topk, rank, num_ranks, group, buffer,
                   use_logfmt=args.use_logfmt, seed=1,
                   imbalance_test=args.imbalance_test, export_trace=args.export_trace,
-                  diagnose=args.diagnose)
+                  diagnose=args.diagnose, print_dispatch_table=args.print_dispatch_table)
 
         do_pressure_test = args.pressure_test
         for seed in range(int(1e9) if do_pressure_test else 0):
@@ -374,12 +392,13 @@ def test_loop(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
             ref_hash = test_main(num_tokens, hidden, num_experts, num_topk, rank, num_ranks, group, buffer,
                                  use_logfmt=args.use_logfmt, seed=seed,
                                  imbalance_test=args.imbalance_test, export_trace=args.export_trace,
-                                 diagnose=args.diagnose)
+                                 diagnose=args.diagnose, print_dispatch_table=args.print_dispatch_table)
             for i in range(20):
                 assert test_main(num_tokens, hidden, num_experts, num_topk, rank, num_ranks, group, buffer,
                                  use_logfmt=args.use_logfmt, seed=seed,
                                  imbalance_test=args.imbalance_test, export_trace=args.export_trace,
-                                 diagnose=args.diagnose) == ref_hash, f'Error: seed={seed}'
+                                 diagnose=args.diagnose,
+                                 print_dispatch_table=args.print_dispatch_table) == ref_hash, f'Error: seed={seed}'
     finally:
         # Destroy the buffer runtime and communication group
         buffer.destroy()
@@ -417,6 +436,8 @@ if __name__ == '__main__':
                         help='Export kineto trace to /tmp')
     parser.add_argument('--diagnose', action='store_true',
                         help='Whether to show diagnosis information')
+    parser.add_argument('--print-dispatch-table', action='store_true',
+                        help='Print a table of token dispatch counts per rank')
     args = parser.parse_args()
 
     os.environ['MASTER_PORT'] = str(args.port)
