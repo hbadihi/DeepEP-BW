@@ -369,6 +369,10 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
 # noinspection PyUnboundLocalVariable,PyShadowingNames
 def test_loop(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
     rank, num_ranks, group = init_dist(local_rank, num_local_ranks)
+    
+    # Add this line to verify GPU mapping
+    print(f'[rank {rank}] Using CUDA device: {torch.cuda.current_device()} (device name: {torch.cuda.get_device_name()})', flush=True)
+    
     num_tokens, hidden = args.num_tokens, args.hidden
     num_topk, num_experts = args.num_topk, args.num_experts
 
