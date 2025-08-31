@@ -371,7 +371,13 @@ def test_loop(local_rank: int, num_local_ranks: int, args: argparse.Namespace):
     rank, num_ranks, group = init_dist(local_rank, num_local_ranks)
     
     # Add this line to verify GPU mapping
-    print(f'[rank {rank}] Using CUDA device: {torch.cuda.current_device()} (device name: {torch.cuda.get_device_name()})', flush=True)
+    cuda_visible_devices = os.environ.get('CUDA_VISIBLE_DEVICES', 'not set')
+    if cuda_visible_devices != 'not set':
+        device_list = cuda_visible_devices.split(',')
+        physical_device_id = device_list[torch.cuda.current_device()]
+        print(f'[rank {rank}] Using CUDA device: {torch.cuda.current_device()} (physical GPU: {physical_device_id}, device name: {torch.cuda.get_device_name()})', flush=True)
+    else:
+        print(f'[rank {rank}] Using CUDA device: {torch.cuda.current_device()} (device name: {torch.cuda.get_device_name()})', flush=True)
     
     num_tokens, hidden = args.num_tokens, args.hidden
     num_topk, num_experts = args.num_topk, args.num_experts
