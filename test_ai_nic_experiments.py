@@ -42,7 +42,7 @@ def run_quick_test(verbose=False):
         
         if gpu_config.lower() != "all":
             num_gpus = len(gpu_config.split(','))
-            cmd = f"CUDA_VISIBLE_DEVICES={gpu_config} {base_cmd} --num-processes {num_gpus}"
+            cmd = f"export CUDA_VISIBLE_DEVICES={gpu_config} && {base_cmd} --num-processes {num_gpus}"
         else:
             cmd = base_cmd
         

@@ -416,7 +416,7 @@ if __name__ == "__main__":
         help='Commands to execute for benchmarking',
         default=[
             "python3 tests/test_low_latency.py --disable-nvlink",
-            "CUDA_VISIBLE_DEVICES=0,2,4,6 python3 tests/test_low_latency.py --disable-nvlink --num-processes 4",
+            "export CUDA_VISIBLE_DEVICES=0,2,4,6 && python3 tests/test_low_latency.py --disable-nvlink --num-processes 4",
         ]
     )
     

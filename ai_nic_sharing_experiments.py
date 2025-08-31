@@ -35,7 +35,7 @@ def run_experiment(name, gpu_config, imbalance_test, output_dir, num_runs=5):
     if gpu_config.lower() != "all":
         # Determine number of processes based on GPU count
         num_gpus = len(gpu_config.split(','))
-        cmd = f"CUDA_VISIBLE_DEVICES={gpu_config} {base_cmd} --num-processes {num_gpus}"
+        cmd = f"export CUDA_VISIBLE_DEVICES={gpu_config} && {base_cmd} --num-processes {num_gpus}"
     else:
         # Use all available GPUs (assuming 8)
         cmd = base_cmd
